@@ -22,6 +22,17 @@
 完成实机验证，兼容性不作保证。MotoPlay、PXC、流体云和后台连接行为可能随手机
 系统或仪表固件版本变化。
 
+欢迎其他机型和车机用户通过
+[GitHub Issues](https://github.com/yuppiesnotzhuhao/QITOU/issues) 提交日志，帮助
+补充适配。建议同时提供：
+
+- 骑投“高级工具 → 导出诊断包”生成的 ZIP
+- 手机型号和 Android / ColorOS 版本
+- 摩托车车型、仪表型号及 MotoPlay 固件版本
+- 问题发生时的录屏、照片和复现步骤
+
+诊断包会自动脱敏 Wi-Fi 密码和配对信息；公开分享前仍建议打开 ZIP 检查内容。
+
 ## 下载
 
 请前往 [GitHub Releases](https://github.com/yuppiesnotzhuhao/QITOU/releases/latest)
