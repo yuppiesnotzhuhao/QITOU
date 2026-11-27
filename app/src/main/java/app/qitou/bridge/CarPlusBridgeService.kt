@@ -24,6 +24,7 @@ class CarPlusBridgeService : Service() {
     private var bluetoothKeeper: BluetoothA2dpKeeper? = null
     private var videoLive = false
     private var liveUpdateLogged = false
+    private var connectionFailure: String? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private val main = Handler(Looper.getMainLooper())
@@ -44,9 +45,11 @@ class CarPlusBridgeService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            connectionFailure = null
             stopSelf()
             return START_NOT_STICKY
         }
+        connectionFailure = null
         startForeground(
             NOTIFICATION_ID,
             notification("正在等待车机和 Car+ 画面", "连接中"),
@@ -75,8 +78,10 @@ class CarPlusBridgeService : Service() {
                 else logAndRepublish("车机 Wi-Fi 已恢复")
             },
             onError = { error ->
+                connectionFailure = error
                 MiniState.setWifi(error, Stage.ERROR)
                 MiniState.update(error)
+                stopSelf()
             },
         )
     }
@@ -146,9 +151,10 @@ class CarPlusBridgeService : Service() {
 
     override fun onDestroy() {
         MiniState.log("[SERVICE] stopping")
+        val failure = connectionFailure
+        connectionFailure = null
         MiniState.running = false
         MiniState.serviceActive = false
-        MiniState.update("已停止", 0)
         try {
             receiver?.stop()
         } catch (_: Exception) {
@@ -181,6 +187,12 @@ class CarPlusBridgeService : Service() {
         MiniRuntime.pipeline = null
         releaseLocks()
         MiniState.resetLinkStates()
+        if (failure != null) {
+            MiniState.setWifi(failure, Stage.ERROR)
+            MiniState.update(failure, 0)
+        } else {
+            MiniState.update("已停止", 0)
+        }
         super.onDestroy()
     }
 
@@ -312,8 +324,7 @@ class CarPlusBridgeService : Service() {
 
         fun start(context: android.content.Context) {
             val intent = Intent(context, CarPlusBridgeService::class.java).setAction(ACTION_START)
-            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
-            else context.startService(intent)
+            context.startForegroundService(intent)
         }
 
         fun stop(context: android.content.Context) {

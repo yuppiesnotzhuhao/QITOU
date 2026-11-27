@@ -3,11 +3,12 @@ package app.qitou.bridge
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.graphics.Color
+import android.graphics.SurfaceTexture
 import android.os.Bundle
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.Surface
+import android.view.TextureView
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -21,9 +22,12 @@ import android.widget.TextView
  * in our own process when the phone display is turned off.
  */
 class ControlActivity : Activity() {
-    private lateinit var preview: SurfaceView
+    private lateinit var preview: TextureView
     private lateinit var fps: TextView
     private var attached = false
+    private var attachedWidth = 0
+    private var attachedHeight = 0
+    private var previewSurface: Surface? = null
     private var lastX = 0
     private var lastY = 0
 
@@ -34,17 +38,40 @@ class ControlActivity : Activity() {
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
 
-        preview = SurfaceView(this).apply {
+        preview = TextureView(this).apply {
             setBackgroundColor(Color.BLACK)
-            holder.setFixedSize(1280, 720)
-            holder.addCallback(object : SurfaceHolder.Callback {
-                override fun surfaceCreated(holder: SurfaceHolder) = Unit
-                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                    attach()
+            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(
+                    surfaceTexture: SurfaceTexture,
+                    width: Int,
+                    height: Int,
+                ) {
+                    surfaceTexture.setDefaultBufferSize(width, height)
+                    attach(width, height)
                 }
 
-                override fun surfaceDestroyed(holder: SurfaceHolder) = detach()
-            })
+                override fun onSurfaceTextureSizeChanged(
+                    surfaceTexture: SurfaceTexture,
+                    width: Int,
+                    height: Int,
+                ) {
+                    surfaceTexture.setDefaultBufferSize(width, height)
+                    if (attached) {
+                        MiniRuntime.pipeline?.updatePreviewSize(width, height)
+                        attachedWidth = width
+                        attachedHeight = height
+                    } else {
+                        attach(width, height)
+                    }
+                }
+
+                override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+                    detach()
+                    return true
+                }
+
+                override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
+            }
             setOnTouchListener(::onTouch)
         }
 
@@ -125,18 +152,36 @@ class ControlActivity : Activity() {
         }
     }
 
-    private fun attach() {
-        val pipe = MiniRuntime.pipeline
-        val holder = preview.holder
-        if (attached || pipe == null || holder.surface?.isValid != true) return
-        pipe.attachPreview(holder.surface, 1280, 480)
-        attached = true
+    private fun attach(
+        width: Int = preview.width,
+        height: Int = preview.height,
+    ) {
+        val pipe = MiniRuntime.pipeline ?: return
+        val texture = preview.surfaceTexture ?: return
+        if (width <= 0 || height <= 0) return
+        if (!attached) {
+            texture.setDefaultBufferSize(width, height)
+            val surface = Surface(texture)
+            previewSurface = surface
+            pipe.attachPreview(surface, width, height)
+            attached = true
+            attachedWidth = width
+            attachedHeight = height
+        } else if (width != attachedWidth || height != attachedHeight) {
+            pipe.updatePreviewSize(width, height)
+            attachedWidth = width
+            attachedHeight = height
+        }
     }
 
     private fun detach() {
         if (!attached) return
         runCatching { MiniRuntime.pipeline?.clearPreview() }
+        runCatching { previewSurface?.release() }
+        previewSurface = null
         attached = false
+        attachedWidth = 0
+        attachedHeight = 0
     }
 
     private fun onTouch(view: android.view.View, event: MotionEvent): Boolean {

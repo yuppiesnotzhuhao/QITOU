@@ -34,6 +34,8 @@ data class PxcFrame(val cmd: Int, val payload: ByteArray) {
     }
 
     companion object {
+        private const val MAX_FRAME_BYTES = 1_048_576
+
         // Channel-selection cmds. First frame on a fresh ctrl socket selects which
         // PXC channel this connection belongs to. Server echoes back channelId+1 on accept.
         // Decoded from net.easyconn.carman.sdk_communication.PXCService.handleConnect().
@@ -155,7 +157,10 @@ data class PxcFrame(val cmd: Int, val payload: ByteArray) {
             if ((cmd xor totalLen) != magic) {
                 throw IllegalStateException("bad magic: cmd=$cmd len=$totalLen magic=$magic")
             }
-            val payloadLen = (totalLen - 16).coerceAtLeast(0)
+            if (totalLen < 16 || totalLen > MAX_FRAME_BYTES) {
+                throw IllegalArgumentException("invalid frame length: $totalLen")
+            }
+            val payloadLen = totalLen - 16
             val payload = ByteArray(payloadLen)
             if (payloadLen > 0 && !readFully(input, payload, payloadLen)) {
                 throw IllegalStateException("short payload, expected=$payloadLen")

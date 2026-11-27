@@ -212,15 +212,22 @@ class MiniActivity : ComponentActivity() {
                     width: Int,
                     height: Int,
                 ) {
-                    surfaceTexture.setDefaultBufferSize(1280, 720)
-                    attachPreview()
+                    surfaceTexture.setDefaultBufferSize(width, height)
+                    attachPreview(width, height)
                 }
 
                 override fun onSurfaceTextureSizeChanged(
                     surfaceTexture: SurfaceTexture,
                     width: Int,
                     height: Int,
-                ) = Unit
+                ) {
+                    surfaceTexture.setDefaultBufferSize(width, height)
+                    if (attached) {
+                        MiniRuntime.pipeline?.updatePreviewSize(width, height)
+                    } else {
+                        attachPreview(width, height)
+                    }
+                }
 
                 override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
                     detachPreview()
@@ -822,6 +829,7 @@ class MiniActivity : ComponentActivity() {
             vehicle = vehicle,
             onReady = { launchBridge() },
             onError = { error ->
+                MiniState.setWifi(error, Stage.ERROR)
                 MiniState.update(error)
             },
         )
@@ -1166,13 +1174,18 @@ class MiniActivity : ComponentActivity() {
         }
     }
 
-    private fun attachPreview() {
+    private fun attachPreview(
+        width: Int = preview.width,
+        height: Int = preview.height,
+    ) {
         val pipe = MiniRuntime.pipeline ?: return
         if (attached) return
         val texture = preview.surfaceTexture ?: return
+        if (width <= 0 || height <= 0) return
+        texture.setDefaultBufferSize(width, height)
         val surface = Surface(texture)
         previewSurface = surface
-        pipe.attachPreview(surface, 1280, 720)
+        pipe.attachPreview(surface, width, height)
         attached = true
         previewHint.visibility = View.GONE
     }

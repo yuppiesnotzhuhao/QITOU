@@ -12,8 +12,21 @@ import java.time.format.DateTimeFormatter
 object CrashLogger {
     const val FILE_NAME = "last_crash.txt"
     private const val MAX_CRASH_BYTES = 512_000
+    private const val PREFS = "qitou_crash_state"
+    private const val KEY_VERSION_CODE = "last_version_code"
     private val timeFormat = DateTimeFormatter.ISO_OFFSET_DATE_TIME
     private val lock = Any()
+
+    fun clearStale(context: Context) {
+        val appContext = context.applicationContext
+        val (versionCode, _) = versionInfo(appContext)
+        synchronized(lock) {
+            val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            if (prefs.getLong(KEY_VERSION_CODE, -1L) == versionCode) return
+            runCatching { File(appContext.filesDir, FILE_NAME).delete() }
+            prefs.edit().putLong(KEY_VERSION_CODE, versionCode).apply()
+        }
+    }
 
     fun install(context: Context) {
         val appContext = context.applicationContext
@@ -44,10 +57,12 @@ object CrashLogger {
             PrintWriter(buffer).use(error::printStackTrace)
             buffer.toString()
         }
+        val (versionCode, versionName) = versionInfo(context)
         val report = LogRedactor.redact(
             buildString {
                 appendLine("${Brand.CHINESE_NAME} ${Brand.LATIN_NAME} crash report")
                 appendLine("time=${timeFormat.format(ZonedDateTime.now())}")
+                appendLine("appVersion=$versionName ($versionCode)")
                 appendLine("android=${Build.VERSION.RELEASE}")
                 appendLine("device=${Build.MANUFACTURER} ${Build.MODEL}")
                 appendLine("thread=${thread.name}")
@@ -63,5 +78,11 @@ object CrashLogger {
         }
         val file = File(context.filesDir, FILE_NAME)
         file.writeBytes(bounded)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun versionInfo(context: Context): Pair<Long, String> {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        return info.longVersionCode to (info.versionName ?: "unknown")
     }
 }

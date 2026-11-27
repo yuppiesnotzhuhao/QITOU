@@ -99,6 +99,7 @@ class AaCompositor(private val log: (String) -> Unit) {
     @Volatile private var hasContent = false
     @Volatile private var pendingFrame = false
     private var lastDrawMs = 0L
+    private var lastDrawFailureLogMs = 0L
     @Volatile private var minFrameIntervalMs = 42L  // default 24 fps; overridden by setFrameCap()
 
     // Keep-alive cadence. The tick is fast enough to promptly flush a coalesced trailing frame after
@@ -165,7 +166,7 @@ class AaCompositor(private val log: (String) -> Unit) {
                     srcW = cw; srcH = ch
                     computeViewport()
                     log("[COMPOSITOR] capture size → ${cw}x$ch → draw rect=${vpW}x$vpH @($vpX,$vpY)")
-                    if (hasContent) drawFrame()
+                    if (hasContent) safeDrawFrame("capture resize")
                 }
             } catch (e: Exception) {
                 log("[COMPOSITOR] updateCaptureSize failed: $e")
@@ -182,7 +183,18 @@ class AaCompositor(private val log: (String) -> Unit) {
                     windowSurface = EGL14.EGL_NO_SURFACE
                 }
                 val attrs = intArrayOf(EGL14.EGL_NONE)
-                windowSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, encoderSurface, attrs, 0)
+                val created = EGL14.eglCreateWindowSurface(
+                    eglDisplay,
+                    eglConfig,
+                    encoderSurface,
+                    attrs,
+                    0,
+                )
+                if (created == EGL14.EGL_NO_SURFACE) {
+                    windowSurface = EGL14.EGL_NO_SURFACE
+                    throw IllegalStateException("EGL encoder surface creation failed")
+                }
+                windowSurface = created
                 canvasW = cw; canvasH = ch; srcW = sw; srcH = sh; fitMode = fit
                 computeViewport()
                 log("[COMPOSITOR] output set canvas=${cw}x$ch src=${sw}x$sh fit=$fit → draw rect=${vpW}x$vpH @($vpX,$vpY)")
@@ -205,13 +217,18 @@ class AaCompositor(private val log: (String) -> Unit) {
                     EGL14.eglDestroySurface(eglDisplay, previewSurface)
                     previewSurface = EGL14.EGL_NO_SURFACE
                 }
-                previewSurface = EGL14.eglCreateWindowSurface(
+                val created = EGL14.eglCreateWindowSurface(
                     eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0,
                 )
+                if (created == EGL14.EGL_NO_SURFACE) {
+                    previewSurface = EGL14.EGL_NO_SURFACE
+                    throw IllegalStateException("EGL preview surface creation failed")
+                }
+                previewSurface = created
                 previewW = w; previewH = h
                 computePreviewRect()
                 log("[COMPOSITOR] preview attached ${w}x$h → draw rect=${ppW}x$ppH @($ppX,$ppY)")
-                if (hasContent) drawFrame()
+                if (hasContent) safeDrawFrame("preview attach")
             } catch (e: Exception) {
                 log("[COMPOSITOR] setPreview failed: $e")
             }
@@ -223,7 +240,9 @@ class AaCompositor(private val log: (String) -> Unit) {
         handler.post {
             previewW = w; previewH = h
             computePreviewRect()
-            if (hasContent && previewSurface != EGL14.EGL_NO_SURFACE) drawFrame()
+            if (hasContent && previewSurface != EGL14.EGL_NO_SURFACE) {
+                safeDrawFrame("preview resize")
+            }
         }
     }
 
@@ -322,7 +341,9 @@ class AaCompositor(private val log: (String) -> Unit) {
             }
         }
         vpX = mL + (areaW - vpW) / 2
-        vpY = mT + (areaH - vpH) / 2
+        // OpenGL's viewport origin is bottom-left. Reserve the bike status area at
+        // the visible bottom by placing the content above it, not below it.
+        vpY = mB + (areaH - vpH) / 2
     }
 
     /**
@@ -335,7 +356,7 @@ class AaCompositor(private val log: (String) -> Unit) {
             cropU = cu.coerceIn(0.05f, 1f)
             cropV = cv.coerceIn(0.05f, 1f)
             computePreviewRect()
-            if (hasContent) drawFrame()
+            if (hasContent) safeDrawFrame("source crop")
         }
     }
 
@@ -344,7 +365,7 @@ class AaCompositor(private val log: (String) -> Unit) {
         handler.post {
             forcedBottomInset = px.coerceAtLeast(0)
             computeViewport()
-            if (hasContent) drawFrame()
+            if (hasContent) safeDrawFrame("bottom inset")
             log("[COMPOSITOR] forced bottom inset ${forcedBottomInset}px")
         }
     }
@@ -366,7 +387,7 @@ class AaCompositor(private val log: (String) -> Unit) {
         // Throttle live frames to the power-mode cap. A too-soon frame is kept (texture already
         // latched above) and drawn by the keep-alive tick, so we cap the rate without losing motion.
         val idleMs = android.os.SystemClock.uptimeMillis() - lastDrawMs
-        if (idleMs >= minFrameIntervalMs) drawFrame() else pendingFrame = true
+        if (idleMs >= minFrameIntervalMs) safeDrawFrame("live frame") else pendingFrame = true
     }
 
     /**
@@ -383,13 +404,28 @@ class AaCompositor(private val log: (String) -> Unit) {
                 val idleMs = android.os.SystemClock.uptimeMillis() - lastDrawMs
                 if (pendingFrame && idleMs >= minFrameIntervalMs) {
                     // Flush the last coalesced live frame so motion doesn't stall at the cap.
-                    drawFrame()
+                    safeDrawFrame("coalesced frame")
                 } else if (idleMs >= IDLE_REDRAW_MS) {
                     // Static screen: a rare re-emit purely to hold the bike's media socket open.
-                    drawFrame()
+                    safeDrawFrame("keepalive")
                 }
             }
             handler.postDelayed(this, KEEPALIVE_TICK_MS)
+        }
+    }
+
+    private fun safeDrawFrame(source: String) {
+        try {
+            drawFrame()
+        } catch (error: Exception) {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastDrawFailureLogMs >= 5_000L) {
+                lastDrawFailureLogMs = now
+                log(
+                    "[COMPOSITOR] $source draw failed: " +
+                        (error.message ?: error.javaClass.simpleName),
+                )
+            }
         }
     }
 

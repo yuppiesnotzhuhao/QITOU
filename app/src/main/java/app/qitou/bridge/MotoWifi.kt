@@ -63,7 +63,9 @@ object MotoWifi {
 
         if (wifi.isWifiEnabled) {
             @Suppress("DEPRECATION")
-            val connectedSsid = wifi.connectionInfo?.ssid?.trim('"')
+            val connectedSsid = runCatching {
+                wifi.connectionInfo?.ssid?.trim('"')
+            }.getOrNull()
             if (connectedSsid.equals(vehicle.ssid, ignoreCase = true)) {
                 val existing = cm.allNetworks.firstOrNull { candidate ->
                     val caps = cm.getNetworkCapabilities(candidate)
@@ -119,10 +121,12 @@ object MotoWifi {
                 if (!shouldMaintain || desired?.ssid != vehicle.ssid) return
                 connecting = false
                 network = null
-                MiniState.setWifi("Wi-Fi 连接失败，自动重试", Stage.ERROR)
+                MiniState.setWifi("未连接车机 Wi-Fi", Stage.ERROR)
                 MiniState.log("[WIFI] ${vehicle.ssid} unavailable")
-                errorCallback?.invoke("无法加入 ${vehicle.ssid}，请确认仪表 MotoPlay 页面仍打开")
-                scheduleReconnect(app, "unavailable")
+                failAndStop(
+                    "未检测到 ${vehicle.ssid}。请保持仪表 MotoPlay 页面打开，" +
+                        "确认手机 Wi-Fi 列表能看到该热点后，再点击连接。",
+                )
             }
 
             override fun onLost(net: Network) {
@@ -142,23 +146,23 @@ object MotoWifi {
         } catch (error: Exception) {
             connecting = false
             MiniState.setWifi("无法请求车机 Wi-Fi", Stage.ERROR)
-            errorCallback?.invoke(error.message ?: error.javaClass.simpleName)
-            scheduleReconnect(app, "request-failed")
+            failAndStop(
+                "无法发起车机 Wi-Fi 连接：" +
+                    (error.message ?: error.javaClass.simpleName),
+            )
         }
     }
 
     private fun scheduleReconnect(context: Context, reason: String) {
         if (!shouldMaintain) return
+        if (reconnectAttempts >= 1) {
+            failAndStop("车机 Wi-Fi 已断开，请确认 MotoPlay 热点可见后重新连接。")
+            return
+        }
         if (reconnectScheduled) return
         reconnectScheduled = true
         reconnectAttempts++
-        val delay = when {
-            reconnectAttempts <= 1 -> 1_500L
-            reconnectAttempts == 2 -> 3_000L
-            reconnectAttempts == 3 -> 6_000L
-            reconnectAttempts == 4 -> 12_000L
-            else -> 30_000L
-        }
+        val delay = 1_500L
         MiniState.log("[WIFI] reconnect in ${delay}ms ($reason)")
         main.postDelayed({
             reconnectScheduled = false
@@ -166,6 +170,13 @@ object MotoWifi {
                 requestJoin(context)
             }
         }, delay)
+    }
+
+    private fun failAndStop(message: String) {
+        shouldMaintain = false
+        connecting = false
+        reconnectScheduled = false
+        errorCallback?.invoke(message)
     }
 
     fun release(cm: ConnectivityManager? = null) {

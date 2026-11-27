@@ -11,6 +11,7 @@ import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -18,7 +19,6 @@ import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 /** Narrow EasyConn/PXC implementation for the 450MT MotoPlay path. */
@@ -31,7 +31,6 @@ class MotoLink(
     private val clients = java.util.Collections.synchronizedList(ArrayList<Socket>())
     private val servers = ArrayList<ServerSocket>()
     private val heartbeats = java.util.Collections.synchronizedList(ArrayList<Thread>())
-    private val live = AtomicInteger(0)
     private val phoneUuid = UUID.randomUUID().toString()
     private val cycleLock = Any()
     private val rearming = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -56,7 +55,7 @@ class MotoLink(
                     MiniState.setPxc("等待车机 Wi-Fi", Stage.WAIT)
                 } else {
                     log("[PXC] phone=${localIp?.hostAddress} bike=${gateway?.hostAddress}")
-                    listen()
+                    synchronized(cycleLock) { listen() }
                     probe()
                 }
                 supervisor()
@@ -76,57 +75,104 @@ class MotoLink(
         val caps = cm.getNetworkCapabilities(net) ?: return false
         if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return false
         val props = cm.getLinkProperties(net) ?: return false
-        val gw = props.routes.firstOrNull { it.isDefaultRoute }?.gateway as? Inet4Address ?: return false
-        val ip = props.linkAddresses
-            .map(LinkAddress::getAddress)
-            .filterIsInstance<Inet4Address>()
-            .firstOrNull { !it.isLoopbackAddress } ?: return false
+        val link = props.linkAddresses.firstOrNull {
+            it.address is Inet4Address && !it.address.isLoopbackAddress
+        } ?: return false
+        val ip = link.address as Inet4Address
+        val routeGateway = props.routes.firstOrNull { it.isDefaultRoute }
+            ?.gateway as? Inet4Address
+        val gw = routeGateway
+            ?.takeUnless { it.isAnyLocalAddress || it.hostAddress == "0.0.0.0" }
+            ?: inferSoftApGateway(link)
+            ?: return false
+        if (routeGateway == null || routeGateway.isAnyLocalAddress) {
+            log("[PXC] gateway unavailable; inferred SoftAP gateway ${gw.hostAddress}")
+        }
         network = net
         gateway = gw
         localIp = ip
         return true
     }
 
+    private fun inferSoftApGateway(link: LinkAddress): Inet4Address? {
+        val prefix = link.prefixLength
+        if (prefix !in 8..30) return null
+        val bytes = (link.address as Inet4Address).address
+        val local = ((bytes[0].toInt() and 0xff) shl 24) or
+            ((bytes[1].toInt() and 0xff) shl 16) or
+            ((bytes[2].toInt() and 0xff) shl 8) or
+            (bytes[3].toInt() and 0xff)
+        val network = local and (-1 shl (32 - prefix))
+        val candidate = if ((network or 1) == local) network or 2 else network or 1
+        val host = byteArrayOf(
+            (candidate ushr 24).toByte(),
+            (candidate ushr 16).toByte(),
+            (candidate ushr 8).toByte(),
+            candidate.toByte(),
+        )
+        return (InetAddress.getByAddress(host) as? Inet4Address)
+            ?.takeUnless { it.isAnyLocalAddress }
+    }
+
     private fun listen() {
         val ip = localIp ?: return
-        for (port in LISTEN_PORTS) {
-            val server = ServerSocket().apply {
-                reuseAddress = true
-                bind(InetSocketAddress(ip, port), 50)
-            }
-            servers += server
-            thread(name = "pw-accept-$port", isDaemon = true) {
-                while (running.get()) {
-                    val socket = try {
-                        server.accept()
-                    } catch (_: Exception) {
-                        break
-                    }
-                    clients += socket
-                    live.incrementAndGet()
-                    lastBikeAt = SystemClock.elapsedRealtime()
-                    lastActivityAt = lastBikeAt
-                    log("[PXC] bike connected :$port")
-                    MiniState.setPxc("车机已连接 :$port", Stage.OK)
-                    thread(name = "pw-conn-$port", isDaemon = true) {
-                        try {
-                            if (port == PORT_CTRL) controlLoop(socket)
-                            else mediaLoop(socket)
-                        } finally {
-                            clients.remove(socket)
-                            live.decrementAndGet()
+        synchronized(cycleLock) {
+            if (!running.get()) return
+            for (port in LISTEN_PORTS) {
+                if (!running.get()) break
+                val server = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(ip, port), 50)
+                }
+                servers += server
+                thread(name = "pw-accept-$port", isDaemon = true) {
+                    while (running.get()) {
+                        val socket = try {
+                            server.accept()
+                        } catch (_: Exception) {
+                            break
+                        }
+                        if (!running.get()) {
                             runCatching { socket.close() }
-                            if (running.get() && live.get() == 0) {
-                                MiniState.setPxc("车机连接断开，准备重连", Stage.ERROR)
+                            break
+                        }
+                        synchronized(clients) { clients += socket }
+                        lastBikeAt = SystemClock.elapsedRealtime()
+                        lastActivityAt = lastBikeAt
+                        log("[PXC] bike connected :$port")
+                        MiniState.setPxc("车机已连接 :$port", Stage.OK)
+                        thread(name = "pw-conn-$port", isDaemon = true) {
+                            try {
+                                if (port == PORT_CTRL) controlLoop(socket)
+                                else mediaLoop(socket)
+                            } catch (error: Exception) {
+                                if (running.get()) {
+                                    log(
+                                        "[PXC] connection :$port ended: " +
+                                            (error.message ?: error.javaClass.simpleName),
+                                    )
+                                }
+                            } finally {
+                                val remaining = synchronized(clients) {
+                                    clients.remove(socket)
+                                    clients.size
+                                }
+                                runCatching { socket.close() }
+                                if (running.get() && remaining == 0) {
+                                    MiniState.setPxc("车机连接断开，准备重连", Stage.ERROR)
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        if (!running.get()) return
         log("[PXC] listening ${LISTEN_PORTS.joinToString()} on ${ip.hostAddress}")
         MiniState.setPxc("等待车机连接", Stage.WAIT)
     }
+
+    private fun clientCount(): Int = synchronized(clients) { clients.size }
 
     private fun probe() {
         val net = network ?: return
@@ -307,51 +353,61 @@ class MotoLink(
      */
     private fun supervisor() {
         while (running.get()) {
-            Thread.sleep(2_000)
-            if (!running.get()) return
-            val now = SystemClock.elapsedRealtime()
-            val cm = context.getSystemService(ConnectivityManager::class.java)
-            val active = MotoWifi.network
-            val activeCaps = active?.let(cm::getNetworkCapabilities)
-            if (activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true) {
-                MiniState.setPxc("等待车机 Wi-Fi", Stage.WAIT)
-                continue
-            }
-            val props = active?.let(cm::getLinkProperties)
-            val currentIp = props?.linkAddresses
-                ?.map(LinkAddress::getAddress)
-                ?.filterIsInstance<Inet4Address>()
-                ?.firstOrNull { !it.isLoopbackAddress }
-            if (currentIp == null) {
-                rearm("Wi-Fi lost", 2_000L)
-                continue
-            }
-            if (localIp == null || currentIp.hostAddress != localIp?.hostAddress) {
-                rearm("Wi-Fi address changed", 500L)
-                continue
-            }
-            val listenerClosed = synchronized(cycleLock) {
-                servers.isEmpty() || servers.any { it.isClosed }
-            }
-            if (listenerClosed) {
-                rearm("listener closed", 1_000L)
-                continue
-            }
-            if (live.get() == 0 && lastBikeAt > 0 && now - lastBikeAt > 5_000) {
-                rearm("bike disconnected", 1_500L)
-                continue
-            }
-            if (captureSeen && frames > 0 && live.get() > 0 &&
-                lastActivityAt > 0 && now - lastActivityAt > 20_000
-            ) {
-                rearm("bike traffic stalled", 1_000L)
-                continue
-            }
-            if (live.get() == 0 && now - lastProbeAt > 10_000) {
-                thread(name = "pxc-reprobe", isDaemon = true) { probe() }
-            }
-            if (captureSeen && frames > 0 && lastPullAt > 0 && now - lastPullAt > 12_000) {
-                rearm("frame pull stalled", 1_000L)
+            try {
+                Thread.sleep(2_000)
+                if (!running.get()) return
+                val now = SystemClock.elapsedRealtime()
+                val cm = context.getSystemService(ConnectivityManager::class.java)
+                val active = MotoWifi.network
+                val activeCaps = active?.let(cm::getNetworkCapabilities)
+                if (activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true) {
+                    MiniState.setPxc("等待车机 Wi-Fi", Stage.WAIT)
+                    continue
+                }
+                val props = active?.let(cm::getLinkProperties)
+                val currentIp = props?.linkAddresses
+                    ?.map(LinkAddress::getAddress)
+                    ?.filterIsInstance<Inet4Address>()
+                    ?.firstOrNull { !it.isLoopbackAddress }
+                if (currentIp == null) {
+                    rearm("Wi-Fi lost", 2_000L)
+                    continue
+                }
+                if (localIp == null || currentIp.hostAddress != localIp?.hostAddress) {
+                    rearm("Wi-Fi address changed", 500L)
+                    continue
+                }
+                val listenerClosed = synchronized(cycleLock) {
+                    servers.isEmpty() || servers.any { it.isClosed }
+                }
+                if (listenerClosed) {
+                    rearm("listener closed", 1_000L)
+                    continue
+                }
+                val clients = clientCount()
+                if (clients == 0 && lastBikeAt > 0 && now - lastBikeAt > 5_000) {
+                    rearm("bike disconnected", 1_500L)
+                    continue
+                }
+                if (captureSeen && frames > 0 && clients > 0 &&
+                    lastActivityAt > 0 && now - lastActivityAt > 20_000
+                ) {
+                    rearm("bike traffic stalled", 1_000L)
+                    continue
+                }
+                if (clients == 0 && now - lastProbeAt > 10_000) {
+                    thread(name = "pxc-reprobe", isDaemon = true) { probe() }
+                }
+                if (captureSeen && frames > 0 && lastPullAt > 0 && now - lastPullAt > 12_000) {
+                    rearm("frame pull stalled", 1_000L)
+                }
+            } catch (error: Exception) {
+                if (!running.get()) return
+                log(
+                    "[PXC] supervisor error: " +
+                        (error.message ?: error.javaClass.simpleName),
+                )
+                Thread.sleep(1_000)
             }
         }
     }
@@ -395,7 +451,6 @@ class MotoLink(
             heartbeats.forEach(Thread::interrupt)
             heartbeats.clear()
         }
-        live.set(0)
         lastBikeAt = 0
         lastActivityAt = 0
     }

@@ -63,6 +63,10 @@ class MiniVideoPipeline(
         compositor.setPreview(surface, width, height)
     }
 
+    fun updatePreviewSize(width: Int, height: Int) {
+        compositor.updatePreviewSize(width, height)
+    }
+
     fun clearPreview() = compositor.clearPreview()
 
     fun onBikeDataStart() {
