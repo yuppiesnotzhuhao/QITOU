@@ -5,12 +5,12 @@ package app.qitou.bridge.carplus
 import java.io.ByteArrayOutputStream
 
 /**
- * Minimal CarLife head-unit protocol used by the local OPPO Car+ bridge.
+ * Minimal CarLife head-unit protocol used by the local phone CarConnect bridge.
  *
- * Car+ exposes the standard CarLife sender on loopback while its CarLife wireless
- * connection page is active. OpenCfMoto connects as the head unit, negotiates the
- * legacy plaintext 3.0 profile, and receives the same H.264 Annex-B stream Car+
- * would normally send to a real CarLife dashboard.
+ * Car+ and Honor CarConnect expose the standard CarLife sender on loopback while
+ * their CarLife wireless-connection flow is active. QITOU connects as the head
+ * unit, negotiates the legacy plaintext 3.0 profile, and receives the same H.264
+ * Annex-B stream that the phone-side app would send to a real CarLife dashboard.
  */
 internal object CarPlusProtocol {
     const val PORT_CMD = 7240

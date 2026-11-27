@@ -39,7 +39,6 @@ class ControlActivity : Activity() {
         window.navigationBarColor = Color.BLACK
 
         preview = TextureView(this).apply {
-            setBackgroundColor(Color.BLACK)
             surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                 override fun onSurfaceTextureAvailable(
                     surfaceTexture: SurfaceTexture,

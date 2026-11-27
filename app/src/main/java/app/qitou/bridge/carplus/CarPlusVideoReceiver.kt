@@ -111,17 +111,23 @@ class CarPlusVideoReceiver(
         thread(name = "carplus-session", isDaemon = true) {
             val startedAt = SystemClock.elapsedRealtime()
             while (running.get()) {
+                var established = false
                 try {
-                    if (connectSession()) {
+                    established = connectSession()
+                    if (established) {
                         startupWarned = false
                         waitForSession()
                     } else if (!startupWarned &&
                         SystemClock.elapsedRealtime() - startedAt > STARTUP_TIMEOUT_MS
                     ) {
                         startupWarned = true
-                        log("[CAR+] local CarLife ports did not appear — choose a CarLife wireless host in the phone-side app")
+                        log("[CAR+] local CarLife ports did not appear — complete the phone-side CarLife wireless connection")
                         MiniState.setCar(
-                            "未找到手机车联 CarLife 服务，请在当前车联应用中选择 CarLife 无线连接",
+                            if (CarPlusLauncher.requiresHonorGuide(context)) {
+                                "荣耀车联尚未进入“正在连接”，请重新打开手机车联"
+                            } else {
+                                "未找到手机车联 CarLife 服务，请完成 CarLife 无线连接"
+                            },
                             Stage.ERROR,
                         )
                     }
@@ -130,10 +136,20 @@ class CarPlusVideoReceiver(
                 } finally {
                     closeSession()
                     MiniState.update(fps = 0)
-                    MiniState.setCar(
-                        if (running.get()) "CarLife 连接中断，正在重连" else "已停止",
-                        if (running.get()) Stage.ERROR else Stage.OFF,
-                    )
+                    when {
+                        !running.get() -> MiniState.setCar("已停止", Stage.OFF)
+                        established -> MiniState.setCar("CarLife 连接中断，正在重连", Stage.ERROR)
+                        startupWarned && CarPlusLauncher.requiresHonorGuide(context) ->
+                            MiniState.setCar(
+                                "荣耀车联尚未进入“正在连接”，请重新打开手机车联",
+                                Stage.ERROR,
+                            )
+                        CarPlusLauncher.requiresHonorGuide(context) -> MiniState.setCar(
+                            "等待荣耀车联进入“正在连接”",
+                            Stage.WAIT,
+                        )
+                        else -> MiniState.setCar("等待手机车联 CarLife 服务", Stage.WAIT)
+                    }
                 }
                 if (running.get()) Thread.sleep(1_500)
             }

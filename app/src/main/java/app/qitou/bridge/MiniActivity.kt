@@ -9,6 +9,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.InputType
 import android.text.TextUtils
 import android.view.Gravity
@@ -67,6 +68,9 @@ class MiniActivity : ComponentActivity() {
     private var lastX = 0
     private var lastY = 0
     private var autoConnectAttempted = false
+    private var pendingHonorLaunch = false
+    private var pendingHonorSourceOnly = false
+    private var pendingHonorLaunchAt = 0L
     private var permissionPurpose = PermissionPurpose.START_BRIDGE
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -121,14 +125,14 @@ class MiniActivity : ComponentActivity() {
             (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 &&
             intent?.getBooleanExtra(CarPlusBridgeService.EXTRA_SOURCE_ONLY, false) == true
         ) {
-            CarPlusBridgeService.start(this, sourceOnly = true)
-            CarPlusLauncher.launch(this, MiniState::log)
+            startCarLifeInput(sourceOnly = true)
         }
         window.decorView.post(::runInitialLaunchAutomation)
     }
 
     override fun onResume() {
         super.onResume()
+        finishPendingHonorLaunchIfNeeded()
         MiniState.listener = { runOnUiThread(::render) }
         attachPreview()
         render()
@@ -589,7 +593,11 @@ class MiniActivity : ComponentActivity() {
         }
         advancedBody.addView(carPlusButton, linearParams(height = 48, bottom = 3))
         advancedBody.addView(TextView(this).apply {
-            text = "仅在投送过程中车联应用被关闭时使用"
+            text = if (CarPlusLauncher.requiresHonorGuide(this@MiniActivity)) {
+                "荣耀手机请进入“无线 WLAN 连接”，等待页面显示“正在连接”"
+            } else {
+                "仅在投送过程中车联应用被关闭时使用"
+            }
             setTextColor(color(R.color.text_body))
             textSize = 11f
             setPadding(dp(4), 0, 0, 0)
@@ -612,9 +620,16 @@ class MiniActivity : ComponentActivity() {
         root.addView(TextView(this).apply {
             text = "使用步骤\n" +
                 "1. 首次点“扫码连接车机”；以后点“连接已保存车辆”或开启启动自动连接\n" +
-                "2. 在手机车联应用中选择 CarLife 无线连接\n" +
-                "3. 保持仪表在手机互联页面；断线后会自动重连\n" +
-                "4. 在“手机控制画面”或“全屏控制”中操作车联画面"
+                if (CarPlusLauncher.requiresHonorGuide(this@MiniActivity)) {
+                    "2. 荣耀车联中先连接仪表蓝牙，再选择“无线 WLAN 连接”并开始连接\n" +
+                        "3. 返回骑投；检测到“正在连接”后会自动接收画面\n" +
+                        "4. 保持仪表在手机互联页面；断线后会自动重连\n" +
+                        "5. 在“手机控制画面”或“全屏控制”中操作车联画面"
+                } else {
+                    "2. 在手机车联应用中选择 CarLife 无线连接\n" +
+                        "3. 保持仪表在手机互联页面；断线后会自动重连\n" +
+                        "4. 在“手机控制画面”或“全屏控制”中操作车联画面"
+                }
             setTextColor(color(R.color.text_body))
             textSize = 14f
             setLineSpacing(0f, 1.15f)
@@ -1054,8 +1069,43 @@ class MiniActivity : ComponentActivity() {
     }
 
     private fun launchBridge() {
-        CarPlusBridgeService.start(this)
+        startCarLifeInput(sourceOnly = false)
+    }
+
+    private fun startCarLifeInput(sourceOnly: Boolean) {
+        if (CarPlusLauncher.requiresHonorGuide(this)) {
+            pendingHonorLaunch = true
+            pendingHonorSourceOnly = sourceOnly
+            pendingHonorLaunchAt = SystemClock.elapsedRealtime()
+            MiniState.update("请在荣耀车联中完成“无线 WLAN 连接”")
+            MiniState.setCar("等待荣耀车联进入“正在连接”", Stage.WAIT)
+            CarPlusLauncher.launch(this, MiniState::log)
+            render()
+            return
+        }
+
+        CarPlusBridgeService.start(this, sourceOnly = sourceOnly)
         CarPlusLauncher.launch(this, MiniState::log)
+        render()
+    }
+
+    private fun finishPendingHonorLaunchIfNeeded() {
+        if (!pendingHonorLaunch) return
+        if (SystemClock.elapsedRealtime() - pendingHonorLaunchAt < 750L) return
+
+        val sourceOnly = pendingHonorSourceOnly
+        pendingHonorLaunch = false
+        pendingHonorSourceOnly = false
+        pendingHonorLaunchAt = 0L
+
+        MiniState.update(
+            if (sourceOnly) {
+                "正在等待荣耀车联进入连接态"
+            } else {
+                "正在等待荣耀车联并启动投送"
+            },
+        )
+        CarPlusBridgeService.start(this, sourceOnly = sourceOnly)
         render()
     }
 
@@ -1329,7 +1379,7 @@ class MiniActivity : ComponentActivity() {
         )
         fullscreenButton.isEnabled = MiniState.running
         fullscreenButton.alpha = if (MiniState.running) 1f else 0.62f
-        val carPlusAvailable = MiniState.serviceActive && MiniState.wifiStage == Stage.OK
+        val carPlusAvailable = MiniState.wifiStage == Stage.OK
         carPlusButton.isEnabled = carPlusAvailable
         carPlusButton.alpha = if (carPlusAvailable) 1f else 0.48f
         if (::phoneRouteButton.isInitialized) renderAudioRouteButtons()

@@ -36,7 +36,36 @@ object CarPlusLauncher {
         Host(HONOR_PACKAGE, "荣耀车联"),
     )
 
+    /**
+     * Honor's CarLife implementation only enters the real projection state after the
+     * system guide has completed the Bluetooth and wireless-WLAN steps. Launching
+     * CarlifeActivity directly leaves its launch artwork as the H.264 source.
+     */
+    fun requiresHonorGuide(context: Context): Boolean =
+        isHonorDevice() && isInstalled(context, HONOR_PACKAGE)
+
     fun launch(context: Context, log: (String) -> Unit): Boolean {
+        if (requiresHonorGuide(context)) {
+            try {
+                val intent = Intent().apply {
+                    action = HONOR_MANAGER_ACTION
+                    component = ComponentName(HONOR_PACKAGE, HONOR_MANAGER)
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED,
+                    )
+                }
+                context.startActivity(intent)
+                log("[CAR+] opened Honor CarConnect wireless guide")
+                return true
+            } catch (error: Exception) {
+                log(
+                    "[CAR+] Honor CarConnect guide rejected: " +
+                        error.javaClass.simpleName,
+                )
+            }
+        }
+
         var installedAny = false
         for (host in orderedHosts()) {
             val pkg = host.packageName
@@ -83,7 +112,7 @@ object CarPlusLauncher {
                                 Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED,
                         )
                         context.startActivity(intent)
-                        log("[CAR+] launched Honor CarConnect manager")
+                        log("[CAR+] opened Honor CarConnect wireless guide")
                         return true
                     } catch (error: Exception) {
                         log(
@@ -192,16 +221,20 @@ object CarPlusLauncher {
         }
 
     private fun orderedHosts(): List<Host> {
-        val manufacturer = Build.MANUFACTURER.lowercase()
-        val brand = Build.BRAND.lowercase()
-        val honorDevice = "honor" in manufacturer || "honor" in brand
+        val honorDevice = isHonorDevice()
         if (!honorDevice) return hosts
         return hosts.sortedBy {
             when (it.packageName) {
-                CARLIFE_PLUS_PACKAGE -> 0
-                HONOR_PACKAGE -> 1
+                HONOR_PACKAGE -> 0
+                CARLIFE_PLUS_PACKAGE -> 1
                 else -> 2
             }
         }
+    }
+
+    private fun isHonorDevice(): Boolean {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val brand = Build.BRAND.lowercase()
+        return "honor" in manufacturer || "honor" in brand
     }
 }
