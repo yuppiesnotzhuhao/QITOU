@@ -10,6 +10,18 @@
 项目不依赖 Android Auto、Google 地图、CarPlay、Shizuku、Root、无障碍服务
 或悬浮窗。
 
+## 实机验证范围
+
+当前版本仅在以下组合完成过实机测试：
+
+- 手机：OPPO Find X8 Ultra
+- 系统：ColorOS 17（Android 17）
+- 仪表：CFMOTO 450MT MotoPlay
+
+其他 OPPO 机型、其他 Android/ColorOS 版本以及其他 CFMOTO 车型或仪表固件尚未
+完成实机验证，兼容性不作保证。MotoPlay、PXC、流体云和后台连接行为可能随手机
+系统或仪表固件版本变化。
+
 ## 下载
 
 请前往 [GitHub Releases](https://github.com/yuppiesnotzhuhao/QITOU/releases/latest)
@@ -21,6 +33,9 @@
 - 手机安装并登录 OPPO Car+
 - 摩托车仪表支持 CFMOTO MotoPlay
 - 使用车机蓝牙声音时，需要提前在系统蓝牙中配对车机
+
+以上是代码支持的最低技术条件，不等同于已完成实机验证的兼容范围；实际验证范围
+以上方“实机验证范围”为准。
 
 ## 流体云
 
