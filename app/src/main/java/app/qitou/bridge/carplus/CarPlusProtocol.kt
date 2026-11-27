@@ -36,11 +36,17 @@ internal object CarPlusProtocol {
     const val HU_STATISTICS = 98343
     const val MD_INFO = 65540
     const val HU_INFO = 98307
+    const val HU_AUTHEN_REQUEST = 98376
+    const val MD_AUTHEN_RESPONSE = 65609
+    const val HU_AUTHEN_RESULT = 98378
+    const val MD_AUTHEN_RESULT = 65611
+    const val HU_AUTHEN_ACK = 98380
     const val HU_VIDEO_ENC_INIT = 98311
     const val VIDEO_ENC_START = 98313
     const val MD_VIDEO_ENC_INIT = 65544
     const val VIDEO_ENC_DONE = 65551
     const val HU_FEATURE_CONFIG = 98386
+    const val MD_FEATURE_CONFIG = 65617
     const val MD_FEATURE_CONFIG_DONE = 65570
     const val MD_MODULE_STATUS = 65574
     const val HU_MODULE_CONTROL = 98344
@@ -110,6 +116,12 @@ internal object CarPlusProtocol {
             varint(3, fps) +
             varint(8, 0) +
             varint(9, 0)
+
+    fun authenRequest(randomValue: String): ByteArray =
+        text(1, randomValue)
+
+    fun authenResult(success: Boolean): ByteArray =
+        varint(1, if (success) 1 else 0)
 
     fun moduleControl(ids: List<Int>): ByteArray {
         var out = varint(1, ids.size)

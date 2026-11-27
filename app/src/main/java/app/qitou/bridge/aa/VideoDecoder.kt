@@ -12,6 +12,8 @@ import android.media.MediaFormat
 import android.os.Build
 import android.os.SystemClock
 import android.view.Surface
+import app.qitou.bridge.CodecCandidatePolicy
+import app.qitou.bridge.MiniState
 import java.nio.ByteBuffer
 import java.util.Locale
 
@@ -63,8 +65,47 @@ class VideoDecoder {
 
     private fun handleOutputFormatChange(format: MediaFormat) {
         AaLog.i("Output Format Changed: $format")
-        val newWidth = try { format.getInteger(MediaFormat.KEY_WIDTH) } catch (e: Exception) { mWidth }
-        val newHeight = try { format.getInteger(MediaFormat.KEY_HEIGHT) } catch (e: Exception) { mHeight }
+        val codedWidth = try {
+            format.getInteger(MediaFormat.KEY_WIDTH)
+        } catch (_: Exception) {
+            mWidth
+        }
+        val codedHeight = try {
+            format.getInteger(MediaFormat.KEY_HEIGHT)
+        } catch (_: Exception) {
+            mHeight
+        }
+        val cropLeft = try {
+            format.getInteger("crop-left")
+        } catch (_: Exception) {
+            0
+        }
+        val cropTop = try {
+            format.getInteger("crop-top")
+        } catch (_: Exception) {
+            0
+        }
+        val cropRight = try {
+            format.getInteger("crop-right")
+        } catch (_: Exception) {
+            codedWidth - 1
+        }
+        val cropBottom = try {
+            format.getInteger("crop-bottom")
+        } catch (_: Exception) {
+            codedHeight - 1
+        }
+        val newWidth = (cropRight - cropLeft + 1)
+            .takeIf { it > 0 && cropLeft >= 0 }
+            ?: codedWidth
+        val newHeight = (cropBottom - cropTop + 1)
+            .takeIf { it > 0 && cropTop >= 0 }
+            ?: codedHeight
+        AaLog.i(
+            "Video visible crop: ${newWidth}x$newHeight " +
+                "(coded=${codedWidth}x$codedHeight, " +
+                "crop=$cropLeft,$cropTop-$cropRight,$cropBottom)",
+        )
         if (mWidth != newWidth || mHeight != newHeight) {
             AaLog.i("Video dimensions changed via format: ${newWidth}x$newHeight")
             mWidth = newWidth
@@ -209,24 +250,53 @@ class VideoDecoder {
         try {
             startTime = System.nanoTime()
             val mimeType = "video/avc"
-            val bestCodec = findBestCodec(mimeType, true)
-                ?: throw IllegalStateException("No decoder available for $mimeType")
-            this.currentCodecName = bestCodec
-
-            codec = MediaCodec.createByCodecName(bestCodec)
             codecBufferInfo = MediaCodec.BufferInfo()
-
-            val format = MediaFormat.createVideoFormat(mimeType, width, height)
-            if (sps != null) format.setByteBuffer("csd-0", ByteBuffer.wrap(sps!!))
-            if (pps != null) format.setByteBuffer("csd-1", ByteBuffer.wrap(pps!!))
-            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2 * 1024 * 1024)
-
             if (!mSurface!!.isValid) throw IllegalStateException("Surface not valid")
+            val candidates = findCodecCandidates(mimeType, width, height)
+            AaLog.i(
+                "Decoder candidates=" +
+                    candidates.joinToString {
+                        "${it.first}:${it.second}:secure=${CodecCandidatePolicy.isSecure(it.first)}"
+                    },
+            )
+            var lastFailure: Throwable? = null
+            for ((candidateName, hardware) in candidates) {
+                var candidateCodec: MediaCodec? = null
+                try {
+                    candidateCodec = MediaCodec.createByCodecName(candidateName)
+                    val format = MediaFormat.createVideoFormat(mimeType, width, height)
+                    if (sps != null) format.setByteBuffer("csd-0", ByteBuffer.wrap(sps!!))
+                    if (pps != null) format.setByteBuffer("csd-1", ByteBuffer.wrap(pps!!))
+                    format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2 * 1024 * 1024)
 
-            AaLog.i("Configuring decoder: $bestCodec for ${width}x${height}")
-            codec?.configure(format, mSurface, null, 0)
-            try { codec?.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT) } catch (e: Exception) {}
-            codec?.start()
+                    AaLog.i("Configuring decoder: $candidateName for ${width}x${height}")
+                    candidateCodec.configure(format, mSurface, null, 0)
+                    try {
+                        candidateCodec.setVideoScalingMode(
+                            MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT,
+                        )
+                    } catch (_: Exception) {
+                    }
+                    candidateCodec.start()
+                    codec = candidateCodec
+                    currentCodecName = candidateName
+                    MiniState.updateDecoderCodec(
+                        "$candidateName · ${CodecCandidatePolicy.displayKind(hardware)}",
+                    )
+                    break
+                } catch (error: Exception) {
+                    lastFailure = error
+                    AaLog.w(
+                        "Decoder rejected $candidateName hardware=$hardware: " +
+                            (error.message ?: error.javaClass.simpleName),
+                    )
+                    runCatching { candidateCodec?.stop() }
+                    runCatching { candidateCodec?.release() }
+                }
+            }
+            if (codec == null) {
+                throw lastFailure ?: IllegalStateException("No decoder available for $mimeType")
+            }
 
             running = true
             outputThread = Thread {
@@ -234,7 +304,7 @@ class VideoDecoder {
                 outputThreadLoop()
             }.apply { name = "AaVideoDecoder-Output"; start() }
 
-            AaLog.i("Codec initialized: $bestCodec")
+            AaLog.i("Codec initialized: $currentCodecName")
         } catch (e: Exception) {
             AaLog.e("Failed to start decoder", e)
             codec = null; running = false
@@ -372,21 +442,56 @@ class VideoDecoder {
         AaLog.i("Output thread stopped")
     }
 
-    private fun findBestCodec(mimeType: String, preferHardware: Boolean): String? {
+    private fun findCodecCandidates(
+        mimeType: String,
+        width: Int,
+        height: Int,
+    ): List<Pair<String, Boolean>> {
         val codecInfos = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.toList()
-        val infos = codecInfos.filter { !it.isEncoder && it.supportedTypes.any { t -> t.equals(mimeType, true) } }
-        val hw = infos.find { isHardwareAccelerated(it) }
-        val sw = infos.find { !isHardwareAccelerated(it) }
-        val selected = if (preferHardware && hw != null) hw.name else sw?.name ?: hw?.name
-        AaLog.i("findBestCodec: hw=${hw?.name}, sw=${sw?.name}, preferHardware=$preferHardware, selected=$selected")
-        return selected
+        val infos = codecInfos
+            .filter { !it.isEncoder && it.supportedTypes.any { t -> t.equals(mimeType, true) } }
+            .distinctBy { it.name }
+        val surfaceCapable = infos.filter { supportsDecoderSurface(it, mimeType) }
+        val sizeCapable = surfaceCapable.filter { supportsDecoderSize(it, mimeType, width, height) }
+        return sizeCapable.ifEmpty { surfaceCapable }.ifEmpty { infos }
+            .sortedWith(
+                compareBy<MediaCodecInfo>(
+                    { CodecCandidatePolicy.rank(it.name, isHardwareAccelerated(it)) },
+                    { it.name },
+                ),
+            )
+            .map { it.name to isHardwareAccelerated(it) }
     }
+
+    private fun supportsDecoderSurface(info: MediaCodecInfo, mimeType: String): Boolean =
+        runCatching {
+            info.getCapabilitiesForType(mimeType).colorFormats.contains(
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
+            )
+        }.getOrDefault(false)
+
+    private fun supportsDecoderSize(
+        info: MediaCodecInfo,
+        mimeType: String,
+        width: Int,
+        height: Int,
+    ): Boolean = runCatching {
+        info.getCapabilitiesForType(mimeType)
+            .videoCapabilities
+            ?.isSizeSupported(width, height)
+            ?: true
+    }.getOrDefault(true)
 
     private fun isHardwareAccelerated(info: MediaCodecInfo): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return info.isHardwareAccelerated
         val lower = info.name.lowercase(Locale.ROOT)
-        return !(lower.startsWith("omx.google.") || lower.startsWith("c2.android.") ||
-                lower.startsWith("omx.ffmpeg.") || lower.contains(".sw.") || lower.contains("software"))
+        return !(
+            lower.startsWith("omx.google.") ||
+                lower.startsWith("c2.android.") ||
+                lower.startsWith("omx.ffmpeg.") ||
+                lower.contains(".sw.") ||
+                lower.contains("software")
+            )
     }
 }
 

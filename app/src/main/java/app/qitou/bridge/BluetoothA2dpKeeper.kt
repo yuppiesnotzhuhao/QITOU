@@ -106,11 +106,19 @@ class BluetoothA2dpKeeper(
                             }
                         }
                     }
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
                 } catch (error: Exception) {
                     log("[BT] A2DP check failed: ${error.javaClass.simpleName}")
                     MiniState.setBluetooth("蓝牙检查失败", Stage.ERROR)
                 }
-                Thread.sleep(5_000)
+                try {
+                    Thread.sleep(5_000)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
             }
         }
     }

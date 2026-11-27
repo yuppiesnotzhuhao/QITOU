@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.os.Build
+import java.net.InetSocketAddress
+import java.net.Socket
 
 /**
  * Starts an installed phone-side CarLife host and leaves the wireless connection
@@ -16,10 +18,10 @@ object CarPlusLauncher {
     private const val CARLIFE_PLUS_PACKAGE = "com.baidu.carlife.honor"
     private const val CARLIFE_PLUS_ACTIVITY =
         "com.baidu.carlife.CarlifeActivity"
-    private const val HONOR_PACKAGE = "com.hihonor.auto"
-    private const val HONOR_MANAGER =
+    private const val HONOR_AUTO_PACKAGE = "com.hihonor.auto"
+    private const val HONOR_AUTO_MANAGER_ACTIVITY =
         "com.hihonor.auto.settings.ManagerActivity"
-    private const val HONOR_MANAGER_ACTION =
+    private const val HONOR_AUTO_MANAGER_ACTION =
         "com.hihonor.auto.action.CAR_LIFE_MANAGER_VIEW"
 
     private data class Host(
@@ -33,37 +35,59 @@ object CarPlusLauncher {
         Host("com.oppo.ocar", "OPPO Car+"),
         Host("com.oplus.car", "OPPO Car+"),
         Host(CARLIFE_PLUS_PACKAGE, "CarLife+ 增强版"),
-        Host(HONOR_PACKAGE, "荣耀车联"),
     )
 
-    /**
-     * Honor's CarLife implementation only enters the real projection state after the
-     * system guide has completed the Bluetooth and wireless-WLAN steps. Launching
-     * CarlifeActivity directly leaves its launch artwork as the H.264 source.
-     */
-    fun requiresHonorGuide(context: Context): Boolean =
-        isHonorDevice() && isInstalled(context, HONOR_PACKAGE)
+    fun isHonorDevice(): Boolean {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val brand = Build.BRAND.lowercase()
+        return "honor" in manufacturer || "honor" in brand
+    }
 
-    fun launch(context: Context, log: (String) -> Unit): Boolean {
-        if (requiresHonorGuide(context)) {
-            try {
-                val intent = Intent().apply {
-                    action = HONOR_MANAGER_ACTION
-                    component = ComponentName(HONOR_PACKAGE, HONOR_MANAGER)
+    fun canUseHonorLocalPresentation(context: Context): Boolean =
+        isHonorDevice() &&
+            isInstalled(context, CARLIFE_PLUS_PACKAGE) &&
+            isInstalled(context, HONOR_AUTO_PACKAGE)
+
+    /**
+     * Opens Honor CarConnect's own wireless connection page.
+     *
+     * CarLife+ must be started by that page and remain on "正在连接". Directly
+     * starting CarlifeActivity produces only its welcome screen: the Honor
+     * CarConnect virtual display and cast surface are not created on that path.
+     */
+    fun launchHonorLocalPresentation(context: Context, log: (String) -> Unit): Boolean {
+        if (!isInstalled(context, HONOR_AUTO_PACKAGE)) {
+            log("[CAR+] 荣耀车联未安装，无法进入官方无线连接页")
+            return false
+        }
+        return try {
+            context.startActivity(
+                Intent(HONOR_AUTO_MANAGER_ACTION).apply {
+                    component = ComponentName(HONOR_AUTO_PACKAGE, HONOR_AUTO_MANAGER_ACTIVITY)
                     addFlags(
                         Intent.FLAG_ACTIVITY_NEW_TASK or
                             Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED,
                     )
-                }
-                context.startActivity(intent)
-                log("[CAR+] opened Honor CarConnect wireless guide")
-                return true
-            } catch (error: Exception) {
-                log(
-                    "[CAR+] Honor CarConnect guide rejected: " +
-                        error.javaClass.simpleName,
-                )
-            }
+                },
+            )
+            log("[CAR+] opened Honor CarConnect wireless connection page")
+            true
+        } catch (error: Exception) {
+            log(
+                "[CAR+] Honor CarConnect page rejected: " +
+                    error.javaClass.simpleName,
+            )
+            false
+        }
+    }
+
+    fun launch(context: Context, log: (String) -> Unit): Boolean {
+        if (canUseHonorLocalPresentation(context)) {
+            return launchHonorLocalPresentation(context, log)
+        }
+        if (isCarLifeLoopbackReady()) {
+            log("[CAR+] existing phone-side CarLife engine detected; keeping current screen")
+            return true
         }
 
         var installedAny = false
@@ -92,34 +116,6 @@ object CarPlusLauncher {
                         "[CAR+] CarLife+ enhanced host rejected: " +
                             error.javaClass.simpleName,
                     )
-                }
-            }
-
-            if (pkg == HONOR_PACKAGE) {
-                val intents = listOf(
-                    Intent().apply {
-                        action = HONOR_MANAGER_ACTION
-                        component = ComponentName(pkg, HONOR_MANAGER)
-                    },
-                    Intent().apply {
-                        component = ComponentName(pkg, HONOR_MANAGER)
-                    },
-                )
-                for (intent in intents) {
-                    try {
-                        intent.addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED,
-                        )
-                        context.startActivity(intent)
-                        log("[CAR+] opened Honor CarConnect wireless guide")
-                        return true
-                    } catch (error: Exception) {
-                        log(
-                            "[CAR+] Honor CarConnect manager rejected: " +
-                                error.javaClass.simpleName,
-                        )
-                    }
                 }
             }
 
@@ -220,21 +216,23 @@ object CarPlusLauncher {
             false
         }
 
+    private fun isCarLifeLoopbackReady(): Boolean =
+        runCatching {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress("127.0.0.1", CarPlusProtocol.PORT_CMD), 300)
+            }
+            true
+        }.getOrDefault(false)
+
     private fun orderedHosts(): List<Host> {
         val honorDevice = isHonorDevice()
         if (!honorDevice) return hosts
         return hosts.sortedBy {
             when (it.packageName) {
-                HONOR_PACKAGE -> 0
-                CARLIFE_PLUS_PACKAGE -> 1
-                else -> 2
+                CARLIFE_PLUS_PACKAGE -> 0
+                else -> 1
             }
         }
     }
 
-    private fun isHonorDevice(): Boolean {
-        val manufacturer = Build.MANUFACTURER.lowercase()
-        val brand = Build.BRAND.lowercase()
-        return "honor" in manufacturer || "honor" in brand
-    }
 }

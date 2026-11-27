@@ -35,8 +35,8 @@ android {
         applicationId = "app.qitou.bridge"
         minSdk = 29
         targetSdk = 36
-        versionCode = 43
-        versionName = "0.12.0"
+        versionCode = 64
+        versionName = "0.18.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

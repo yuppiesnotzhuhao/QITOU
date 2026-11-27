@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
-import android.content.pm.ApplicationInfo
 import android.graphics.drawable.Icon
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -15,11 +14,13 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import app.qitou.bridge.carplus.CarPlusLauncher
+import app.qitou.bridge.carplus.CarLifeReceiver
 import app.qitou.bridge.carplus.CarPlusVideoReceiver
 
 class CarPlusBridgeService : Service() {
     private var pipeline: MiniVideoPipeline? = null
-    private var receiver: CarPlusVideoReceiver? = null
+    private var receiver: CarLifeReceiver? = null
     private var motoLink: MotoLink? = null
     private var audioPlayer: MotoAudioPlayer? = null
     private var bluetoothKeeper: BluetoothA2dpKeeper? = null
@@ -58,12 +59,13 @@ class CarPlusBridgeService : Service() {
         )
         MiniState.serviceActive = true
         acquireLocks()
-        sourceOnly =
-            (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 &&
-                intent?.getBooleanExtra(EXTRA_SOURCE_ONLY, false) == true
+        sourceOnly = intent?.getBooleanExtra(EXTRA_SOURCE_ONLY, false) == true
+        MiniState.localOnly = sourceOnly
         if (sourceOnly) {
-            MiniState.setVehicle("输入诊断")
-            MiniState.setWifi("手机车联输入诊断", Stage.OK)
+            MiniState.setVehicle("本地诊断")
+            MiniState.setWifi("无需连接车机", Stage.OK)
+            MiniState.setPxc("等待车机输出预览", Stage.WAIT)
+            MiniState.update("正在启动车机输出预览")
             startBridge()
         } else {
             connectVehicle()
@@ -101,6 +103,7 @@ class CarPlusBridgeService : Service() {
         if (MiniState.running) return
         MiniState.running = true
         MiniState.serviceActive = true
+        MiniState.resetVideoCodecs()
         MiniState.update("正在启动手机车联接收")
         val pipe = MiniVideoPipeline(MiniState::log)
         pipe.start()
@@ -108,6 +111,8 @@ class CarPlusBridgeService : Service() {
         MiniRuntime.pipeline = pipe
         audioPlayer = MotoAudioPlayer(applicationContext, MiniState::log)
         bluetoothKeeper = BluetoothA2dpKeeper(applicationContext, MiniState::log).also { it.start() }
+        val displayProfile = VehicleDisplayProfileStore.load(applicationContext)
+        val sourceRequest = displayProfile.sourceRequest
         val input = pipe.decoderInputSurface
         if (input == null) {
             MiniState.update("视频合成器启动失败")
@@ -116,50 +121,73 @@ class CarPlusBridgeService : Service() {
             return
         }
 
+        val receiverLog: (String) -> Unit = { MiniState.log(it) }
+        val onFps: (Int) -> Unit = { fps ->
+            MiniState.update(fps = fps)
+            if (fps > 0) MiniState.setCar("车联画面解码 · $fps fps", Stage.OK)
+        }
+        val onVideoSize: (Int, Int) -> Unit = { w, h ->
+            pipeline?.updateSourceSize(w, h)
+            MiniState.setSourceSize(w, h)
+            MiniState.log("[MINI] CarLife stream ${w}x$h")
+        }
+        val onReady: () -> Unit = {
+            if (!videoLive) {
+                videoLive = true
+                if (!sourceOnly && motoLink?.isRunning != true) {
+                    runCatching { motoLink?.stop() }
+                    motoLink = MotoLink(applicationContext, pipe, MiniState::log).also { it.start() }
+                }
+                if (sourceOnly) {
+                    val profile = VehicleDisplayProfileStore.load(applicationContext)
+                    val output = profile.resolveOutput(800, 386)
+                    pipeline?.configureBikeCanvas(
+                        output.first,
+                        output.second,
+                        profile.mode.screenFit(),
+                        profile.insets,
+                    )
+                    MiniState.setOutputSize(output.first, output.second, profile.summary())
+                    MiniState.update("车机输出预览 · 已接收手机车联")
+                    MiniState.setCar("手机车联画面已接收", Stage.OK)
+                    MiniState.setPxc(
+                        "车机输出预览 · ${MiniState.outputWidth}×${MiniState.outputHeight}",
+                        Stage.OK,
+                    )
+                    updateNotification(
+                        "车机输出预览 · ${MiniState.outputWidth}×${MiniState.outputHeight}",
+                        "本地诊断",
+                    )
+                } else {
+                    MiniState.update("手机车联画面已接收 · 等待车机画布")
+                    MiniState.setCar("手机车联画面已接收 · 等待车机尺寸", Stage.WAIT)
+                    updateNotification("手机车联已连接 · 正在协商车机画布", "协商中")
+                }
+            }
+        }
+        val onSessionEnded: () -> Unit = {
+            videoLive = false
+            MiniState.update("手机车联画面中断，正在重连")
+            MiniState.setCar("车联画面中断，自动重连", Stage.ERROR)
+            updateNotification("手机车联画面中断，正在重连", "重连中")
+        }
+        val onAudioPacket: (Boolean, ByteArray, Int, Int) -> Unit =
+            { isTts, pcm, rate, channels ->
+                audioPlayer?.write(isTts, pcm, rate, channels)
+            }
+
         receiver = CarPlusVideoReceiver(
             context = applicationContext,
             surface = input,
-            log = {
-                MiniState.log(it)
-            },
-            requestedWidth = 1280,
-            requestedHeight = 480,
+            log = receiverLog,
+            requestedWidth = sourceRequest.width,
+            requestedHeight = sourceRequest.height,
             requestedFps = 30,
-            onFps = { fps ->
-                MiniState.update(fps = fps)
-                if (fps > 0) MiniState.setCar("车联画面解码 · $fps fps", Stage.OK)
-            },
-            onVideoSize = { w, h ->
-                MiniState.log("[MINI] CarLife stream ${w}x$h")
-            },
-            onReady = {
-                if (!videoLive) {
-                    videoLive = true
-                    pipeline?.configureBikeCanvas(800, 384)
-                    if (!sourceOnly && motoLink?.isRunning != true) {
-                        runCatching { motoLink?.stop() }
-                        motoLink = MotoLink(applicationContext, pipe, MiniState::log).also { it.start() }
-                    }
-                    if (sourceOnly) {
-                        MiniState.update("手机车联输入诊断 · 已接收画面")
-                        MiniState.setCar("车联输入诊断 · 800×384", Stage.OK)
-                        updateNotification("手机车联输入诊断 · 已接收画面", "诊断中")
-                    } else {
-                        MiniState.update("手机车联画面已接收 · 正在连接 MotoPlay")
-                        MiniState.setCar("车联画面已接收 · 800×384", Stage.OK)
-                        updateNotification("手机车联已连接 · MotoPlay 投送中", "投送中")
-                    }
-                }
-            },
-            onSessionEnded = {
-                videoLive = false
-                MiniState.update("手机车联画面中断，正在重连")
-                MiniState.setCar("车联画面中断，自动重连", Stage.ERROR)
-                updateNotification("手机车联画面中断，正在重连", "重连中")
-            },
-            onAudioPacket = { isTts, pcm, rate, channels ->
-                audioPlayer?.write(isTts, pcm, rate, channels)
-            },
+            onFps = onFps,
+            onVideoSize = onVideoSize,
+            onReady = onReady,
+            onSessionEnded = onSessionEnded,
+            onAudioPacket = onAudioPacket,
         ).also {
             MiniRuntime.receiver = it
             it.start()
@@ -172,6 +200,7 @@ class CarPlusBridgeService : Service() {
         connectionFailure = null
         MiniState.running = false
         MiniState.serviceActive = false
+        MiniState.localOnly = false
         try {
             receiver?.stop()
         } catch (_: Exception) {
@@ -203,6 +232,7 @@ class CarPlusBridgeService : Service() {
         pipeline = null
         MiniRuntime.pipeline = null
         releaseLocks()
+        MiniState.resetVideoCodecs()
         MiniState.resetLinkStates()
         if (failure != null) {
             MiniState.setWifi(failure, Stage.ERROR)

@@ -61,6 +61,15 @@ class AaCompositor(private val log: (String) -> Unit) {
     @Volatile private var bufW = 0
     @Volatile private var bufH = 0
 
+    // Diagnostic target: shows the actual bike canvas, not the raw phone source.
+    private var bikePreviewSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+    @Volatile private var bikePreviewW = 0
+    @Volatile private var bikePreviewH = 0
+    private var bpX = 0
+    private var bpY = 0
+    private var bpW = 0
+    private var bpH = 0
+
     private var program = 0
     private var aPosition = 0
     private var aTexCoord = 0
@@ -87,8 +96,8 @@ class AaCompositor(private val log: (String) -> Unit) {
     @Volatile private var vpY = 0
     @Volatile private var vpW = 0
     @Volatile private var vpH = 0
-    @Volatile private var fitMode: ScreenFit = ScreenFit.FILL
-    @Volatile private var forcedBottomInset = 0
+    @Volatile private var fitMode: ScreenFit = ScreenFit.FIT
+    @Volatile private var safeInsets: CanvasInsets = CanvasInsets()
 
     private val texMatrix = FloatArray(16)
 
@@ -99,6 +108,7 @@ class AaCompositor(private val log: (String) -> Unit) {
     @Volatile private var hasContent = false
     @Volatile private var pendingFrame = false
     private var lastDrawMs = 0L
+    private var lastPreviewDrawMs = 0L
     private var lastDrawFailureLogMs = 0L
     @Volatile private var minFrameIntervalMs = 42L  // default 24 fps; overridden by setFrameCap()
 
@@ -108,6 +118,7 @@ class AaCompositor(private val log: (String) -> Unit) {
     // than ~twice a second is wasted heat. This is the big idle-power win over the old 15fps floor.
     private val KEEPALIVE_TICK_MS = 150L
     private val IDLE_REDRAW_MS = 2000L
+    private val PREVIEW_FRAME_INTERVAL_MS = 50L
 
     // Full-screen quad (triangle strip): pos.xy + tex.uv interleaved.
     private val quad: FloatBuffer = ByteBuffer
@@ -175,7 +186,15 @@ class AaCompositor(private val log: (String) -> Unit) {
     }
 
     /** Point the compositor at the encoder's input surface, sized to the bike canvas. */
-    fun setOutput(encoderSurface: Surface, cw: Int, ch: Int, sw: Int, sh: Int, fit: ScreenFit) {
+    fun setOutput(
+        encoderSurface: Surface,
+        cw: Int,
+        ch: Int,
+        sw: Int,
+        sh: Int,
+        fit: ScreenFit,
+        insets: CanvasInsets = CanvasInsets(),
+    ) {
         handler.post {
             try {
                 if (windowSurface != EGL14.EGL_NO_SURFACE) {
@@ -196,11 +215,27 @@ class AaCompositor(private val log: (String) -> Unit) {
                 }
                 windowSurface = created
                 canvasW = cw; canvasH = ch; srcW = sw; srcH = sh; fitMode = fit
+                safeInsets = insets
                 computeViewport()
+                computeBikePreviewRect()
                 log("[COMPOSITOR] output set canvas=${cw}x$ch src=${sw}x$sh fit=$fit → draw rect=${vpW}x$vpH @($vpX,$vpY)")
+                if (hasContent) safeDrawFrame("bike output")
             } catch (e: Exception) {
                 log("[COMPOSITOR] setOutput failed: $e")
             }
+        }
+    }
+
+    fun updateCanvasLayout(fit: ScreenFit, insets: CanvasInsets) {
+        handler.post {
+            fitMode = fit
+            safeInsets = insets
+            computeViewport()
+            log(
+                "[COMPOSITOR] layout fit=$fit insets=${insets.summary()} " +
+                    "draw rect=${vpW}x$vpH @($vpX,$vpY)",
+            )
+            if (hasContent) safeDrawFrame("layout update")
         }
     }
 
@@ -267,6 +302,66 @@ class AaCompositor(private val log: (String) -> Unit) {
     }
 
     /**
+     * Attach a preview of the real encoder canvas. Unlike [setPreview], this renders the exact
+     * FILL/FIT/STRETCH result that would be sent to the motorcycle, including crop and black bars.
+     */
+    fun setBikePreview(surface: Surface, w: Int, h: Int) {
+        handler.post {
+            try {
+                if (bikePreviewSurface != EGL14.EGL_NO_SURFACE) {
+                    EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
+                    EGL14.eglDestroySurface(eglDisplay, bikePreviewSurface)
+                    bikePreviewSurface = EGL14.EGL_NO_SURFACE
+                }
+                val created = EGL14.eglCreateWindowSurface(
+                    eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0,
+                )
+                if (created == EGL14.EGL_NO_SURFACE) {
+                    throw IllegalStateException("EGL bike preview surface creation failed")
+                }
+                bikePreviewSurface = created
+                bikePreviewW = w
+                bikePreviewH = h
+                computeBikePreviewRect()
+                log("[COMPOSITOR] bike preview attached ${w}x$h → canvas rect=${bpW}x$bpH @($bpX,$bpY)")
+                if (hasContent) safeDrawFrame("bike preview attach")
+            } catch (e: Exception) {
+                log("[COMPOSITOR] setBikePreview failed: $e")
+            }
+        }
+    }
+
+    fun updateBikePreviewSize(w: Int, h: Int) {
+        handler.post {
+            bikePreviewW = w
+            bikePreviewH = h
+            computeBikePreviewRect()
+            if (hasContent && bikePreviewSurface != EGL14.EGL_NO_SURFACE) {
+                safeDrawFrame("bike preview resize")
+            }
+        }
+    }
+
+    fun clearBikePreview() {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        handler.post {
+            try {
+                if (bikePreviewSurface != EGL14.EGL_NO_SURFACE) {
+                    EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
+                    EGL14.eglDestroySurface(eglDisplay, bikePreviewSurface)
+                }
+            } catch (_: Exception) {
+            } finally {
+                bikePreviewSurface = EGL14.EGL_NO_SURFACE
+                bikePreviewW = 0
+                bikePreviewH = 0
+                latch.countDown()
+            }
+        }
+        try { latch.await(1, java.util.concurrent.TimeUnit.SECONDS) } catch (_: Exception) {}
+    }
+
+    /**
      * Aspect-fit the AA source into the preview surface ([previewW]x[previewH]). Uses the *usable*
      * area (coded frame minus match-aspect margins, i.e. scaled by [cropU]/[cropV]) so the in-app
      * Dash view matches what the compositor actually samples and isn't stretched.
@@ -282,6 +377,23 @@ class AaCompositor(private val log: (String) -> Unit) {
         }
         ppX = (previewW - ppW) / 2
         ppY = (previewH - ppH) / 2
+    }
+
+    private fun computeBikePreviewRect() {
+        if (bikePreviewW == 0 || bikePreviewH == 0) return
+        val outputW = canvasW.takeIf { it > 0 } ?: 800
+        val outputH = canvasH.takeIf { it > 0 } ?: 386
+        val canvasAspect = outputW.toFloat() / outputH
+        val viewAspect = bikePreviewW.toFloat() / bikePreviewH
+        if (canvasAspect < viewAspect) {
+            bpH = bikePreviewH
+            bpW = Math.round(bikePreviewH * canvasAspect)
+        } else {
+            bpW = bikePreviewW
+            bpH = Math.round(bikePreviewW / canvasAspect)
+        }
+        bpX = (bikePreviewW - bpW) / 2
+        bpY = (bikePreviewH - bpH) / 2
     }
 
     /**
@@ -312,38 +424,11 @@ class AaCompositor(private val log: (String) -> Unit) {
      */
     private fun computeViewport() {
         if (canvasW == 0 || canvasH == 0 || srcW == 0 || srcH == 0) return
-        // Inset by rider/profile screen margins so chrome (e.g. 800NK pull-down) stays black.
-        val mT = 0
-        val mB = forcedBottomInset.coerceIn(0, canvasH)
-        val mL = 0
-        val mR = 0
-        val areaW = (canvasW - mL - mR).coerceAtLeast(1)
-        val areaH = (canvasH - mT - mB).coerceAtLeast(1)
-        val srcAspect = srcW.toFloat() / srcH
-        val areaAspect = areaW.toFloat() / areaH
-        when (fitMode) {
-            ScreenFit.STRETCH -> {
-                vpW = areaW; vpH = areaH
-            }
-            ScreenFit.FIT -> {
-                if (srcAspect < areaAspect) {
-                    vpH = areaH; vpW = Math.round(areaH * srcAspect)
-                } else {
-                    vpW = areaW; vpH = Math.round(areaW / srcAspect)
-                }
-            }
-            ScreenFit.FILL -> {
-                if (srcAspect < areaAspect) {
-                    vpW = areaW; vpH = Math.round(areaW / srcAspect)
-                } else {
-                    vpH = areaH; vpW = Math.round(areaH * srcAspect)
-                }
-            }
-        }
-        vpX = mL + (areaW - vpW) / 2
-        // OpenGL's viewport origin is bottom-left. Reserve the bike status area at
-        // the visible bottom by placing the content above it, not below it.
-        vpY = mB + (areaH - vpH) / 2
+        val rect = computeScreenViewport(canvasW, canvasH, srcW, srcH, fitMode, safeInsets)
+        vpX = rect.x
+        vpY = rect.y
+        vpW = rect.width
+        vpH = rect.height
     }
 
     /**
@@ -357,16 +442,6 @@ class AaCompositor(private val log: (String) -> Unit) {
             cropV = cv.coerceIn(0.05f, 1f)
             computePreviewRect()
             if (hasContent) safeDrawFrame("source crop")
-        }
-    }
-
-    /** Source-specific chrome reserve (Car+ -> 450MT bottom dashboard strip). */
-    fun setForcedBottomInset(px: Int) {
-        handler.post {
-            forcedBottomInset = px.coerceAtLeast(0)
-            computeViewport()
-            if (hasContent) safeDrawFrame("bottom inset")
-            log("[COMPOSITOR] forced bottom inset ${forcedBottomInset}px")
         }
     }
 
@@ -435,16 +510,76 @@ class AaCompositor(private val log: (String) -> Unit) {
      * letterboxed into its own viewport.
      */
     private fun drawFrame() {
-        if (windowSurface == EGL14.EGL_NO_SURFACE && previewSurface == EGL14.EGL_NO_SURFACE) return
+        if (windowSurface == EGL14.EGL_NO_SURFACE &&
+            previewSurface == EGL14.EGL_NO_SURFACE &&
+            bikePreviewSurface == EGL14.EGL_NO_SURFACE
+        ) return
         surfaceTexture.getTransformMatrix(texMatrix)
-        if (windowSurface != EGL14.EGL_NO_SURFACE) renderTo(windowSurface, vpX, vpY, vpW, vpH)
-        if (previewSurface != EGL14.EGL_NO_SURFACE) renderTo(previewSurface, ppX, ppY, ppW, ppH)
-        lastDrawMs = android.os.SystemClock.uptimeMillis()
-        pendingFrame = false
+        val now = android.os.SystemClock.uptimeMillis()
+        var drewTarget = false
+        var drewPreview = false
+        if (windowSurface != EGL14.EGL_NO_SURFACE) {
+            renderTo(windowSurface, vpX, vpY, vpW, vpH, safeCanvasRect())
+            drewTarget = true
+        }
+        if (now - lastPreviewDrawMs >= PREVIEW_FRAME_INTERVAL_MS) {
+            if (previewSurface != EGL14.EGL_NO_SURFACE) {
+                renderTo(previewSurface, ppX, ppY, ppW, ppH)
+                drewTarget = true
+                drewPreview = true
+            }
+            if (bikePreviewSurface != EGL14.EGL_NO_SURFACE && canvasW > 0 && canvasH > 0) {
+                val scaleX = bpW.toFloat() / canvasW
+                val scaleY = bpH.toFloat() / canvasH
+                val safe = safeCanvasRect()
+                renderTo(
+                    bikePreviewSurface,
+                    bpX + Math.round(vpX * scaleX),
+                    bpY + Math.round(vpY * scaleY),
+                    Math.round(vpW * scaleX),
+                    Math.round(vpH * scaleY),
+                    ViewportRect(
+                        x = bpX + Math.round(safe.x * scaleX),
+                        y = bpY + Math.round(safe.y * scaleY),
+                        width = Math.round(safe.width * scaleX),
+                        height = Math.round(safe.height * scaleY),
+                    ),
+                )
+                drewTarget = true
+                drewPreview = true
+            }
+            if (drewPreview) lastPreviewDrawMs = now
+        }
+        if (drewTarget) {
+            lastDrawMs = now
+            pendingFrame = false
+        } else {
+            pendingFrame = true
+        }
     }
 
     /** Render the latched frame into [target], letterboxed to viewport ([vx],[vy],[vw],[vh]). */
-    private fun renderTo(target: EGLSurface, vx: Int, vy: Int, vw: Int, vh: Int) {
+    private fun safeCanvasRect(): ViewportRect {
+        val left = safeInsets.left.coerceIn(0, (canvasW - 1).coerceAtLeast(0))
+        val right = safeInsets.right.coerceIn(0, (canvasW - left - 1).coerceAtLeast(0))
+        val top = safeInsets.top.coerceIn(0, (canvasH - 1).coerceAtLeast(0))
+        val bottom = safeInsets.bottom.coerceIn(0, (canvasH - top - 1).coerceAtLeast(0))
+        return ViewportRect(
+            x = left,
+            y = top,
+            width = (canvasW - left - right).coerceAtLeast(1),
+            height = (canvasH - top - bottom).coerceAtLeast(1),
+        )
+    }
+
+    private fun renderTo(
+        target: EGLSurface,
+        vx: Int,
+        vy: Int,
+        vw: Int,
+        vh: Int,
+        clip: ViewportRect? = null,
+    ) {
         EGL14.eglMakeCurrent(eglDisplay, target, target, eglContext)
 
         // Black background (the letterbox bars).
@@ -453,14 +588,32 @@ class AaCompositor(private val log: (String) -> Unit) {
 
         // FILL may compute a viewport taller/wider than the canvas (center-crop). Scissor so we
         // never paint outside the bike encoder surface.
-        val clipW = if (target === windowSurface) canvasW else previewW
-        val clipH = if (target === windowSurface) canvasH else previewH
+        val clipW = when (target) {
+            windowSurface -> canvasW
+            bikePreviewSurface -> bikePreviewW
+            else -> previewW
+        }
+        val clipH = when (target) {
+            windowSurface -> canvasH
+            bikePreviewSurface -> bikePreviewH
+            else -> previewH
+        }
         if (clipW > 0 && clipH > 0) {
             GLES20.glEnable(GLES20.GL_SCISSOR_TEST)
-            GLES20.glScissor(0, 0, clipW, clipH)
+            val clipX = clip?.x?.coerceIn(0, clipW - 1) ?: 0
+            val clipY = clip?.y?.coerceIn(0, clipH - 1) ?: 0
+            val clipSafeW = clip?.width?.coerceIn(1, clipW - clipX) ?: clipW
+            val clipSafeH = clip?.height?.coerceIn(1, clipH - clipY) ?: clipH
+            GLES20.glScissor(
+                clipX,
+                clipH - clipY - clipSafeH,
+                clipSafeW,
+                clipSafeH,
+            )
         }
 
-        GLES20.glViewport(vx, vy, vw, vh)
+        // Viewport geometry uses a top-left origin; OpenGL uses bottom-left.
+        GLES20.glViewport(vx, clipH - vy - vh, vw, vh)
         GLES20.glUseProgram(program)
 
         quad.position(0)
@@ -496,6 +649,9 @@ class AaCompositor(private val log: (String) -> Unit) {
                 EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
                 if (windowSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, windowSurface)
                 if (previewSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, previewSurface)
+                if (bikePreviewSurface != EGL14.EGL_NO_SURFACE) {
+                    EGL14.eglDestroySurface(eglDisplay, bikePreviewSurface)
+                }
                 if (pbuffer != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, pbuffer)
                 if (eglContext != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(eglDisplay, eglContext)
                 EGL14.eglTerminate(eglDisplay)

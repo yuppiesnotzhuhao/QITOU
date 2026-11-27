@@ -19,6 +19,7 @@ import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 
 /** Narrow EasyConn/PXC implementation for the 450MT MotoPlay path. */
@@ -43,6 +44,9 @@ class MotoLink(
     @Volatile private var lastActivityAt = 0L
     @Volatile private var lastPullAt = 0L
     @Volatile private var lastProbeAt = 0L
+    @Volatile private var negotiatedWidth = 0
+    @Volatile private var negotiatedHeight = 0
+    private val loggedUnknownCommands = ConcurrentHashMap.newKeySet<Int>()
 
     val isRunning: Boolean get() = running.get()
 
@@ -226,6 +230,7 @@ class MotoLink(
                 PxcFrame.CMD_HU_QUERY_TIME -> {
                     PxcFrame(PxcFrame.CMD_HU_QUERY_TIME_ACK, ByteArray(0)).write(out)
                 }
+                else -> logUnknownControl(frame)
             }
         }
     }
@@ -233,6 +238,8 @@ class MotoLink(
     private fun replyClientInfo(frame: PxcFrame, out: OutputStream) {
         val bike = runCatching { JSONObject(String(frame.payload, Charsets.UTF_8)) }.getOrNull()
         val huid = bike?.optString("HUID")?.ifBlank { null }
+        val keys = bike?.keys()?.asSequence()?.sorted()?.joinToString(",").orEmpty()
+        if (keys.isNotEmpty()) log("[PXC] bike CLIENT_INFO keys=$keys")
         val reply = JSONObject().apply {
             put("pxcVersion", "1.0.2")
             put("phoneUUID", phoneUuid)
@@ -274,7 +281,12 @@ class MotoLink(
         val out = socket.getOutputStream()
         val t = thread(name = "pw-heartbeat", isDaemon = true) {
             while (running.get() && !socket.isClosed) {
-                Thread.sleep(2_000)
+                try {
+                    Thread.sleep(2_000)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
                 try {
                     PxcFrame(PxcFrame.CMD_HEARTBEAT, ByteArray(0)).write(out)
                 } catch (_: Exception) {
@@ -305,18 +317,47 @@ class MotoLink(
     private fun handleMedia(cmd: Int, body: ByteArray, out: OutputStream) {
         when (cmd) {
             16 -> {
-                val b = ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN)
-                val width = if (body.size >= 2) b.getShort(0).toInt() and 0xffff else 800
-                val height = if (body.size >= 4) b.getShort(2).toInt() and 0xffff else 384
+                val config = PxcCaptureConfigurationParser.parse(body)
+                if (captureSeen &&
+                    (negotiatedWidth != config.width || negotiatedHeight != config.height)
+                ) {
+                    throw IllegalStateException(
+                        "PXC media size changed inside one session: " +
+                            "${negotiatedWidth}x$negotiatedHeight -> ${config.width}x${config.height}",
+                    )
+                }
+                negotiatedWidth = config.width
+                negotiatedHeight = config.height
                 captureSeen = true
-                pipeline.configureBikeCanvas(800, 384)
+                val profile = VehicleDisplayProfileStore.load(context)
+                val output = profile.resolveOutput(config.width, config.height)
+                pipeline.configureBikeCanvas(
+                    output.first,
+                    output.second,
+                    profile.mode.screenFit(),
+                    profile.insets,
+                    fps = config.fps,
+                )
+                MiniState.setOutputSize(output.first, output.second, profile.summary())
+                MiniState.update(
+                    "车机画布 ${output.first}×${output.second}@${config.fps} · ${profile.summary()}",
+                )
+                MiniState.setPxc(
+                    "车机输出 ${output.first}×${output.second} · ${profile.mode.label}",
+                    Stage.OK,
+                )
+                log(
+                    "[PXC] capture reported=${config.width}x${config.height}@${config.fps} " +
+                        "output=${output.first}x${output.second} " +
+                        "encoder=${config.encoder} extension=${config.extensionFlag} " +
+                        "rawLen=${body.size} hex=${body.toHexPreview()}",
+                )
                 val reply = ByteBuffer.allocate(9).order(ByteOrder.LITTLE_ENDIAN)
-                reply.putInt(0, 2)
-                reply.putShort(4, width.toShort())
-                reply.putShort(6, height.toShort())
-                reply.put(8, if (body.size >= 30) body[29] else 0)
+                reply.putInt(0, config.encoder)
+                reply.putShort(4, output.first.toShort())
+                reply.putShort(6, output.second.toShort())
+                reply.put(8, config.extensionFlag.toByte())
                 req(out, 17, reply.array())
-                log("[PXC] capture ${width}x$height")
             }
             48 -> req(out, 49, ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
                 .putInt(0, 3).putInt(4, 1).array())
@@ -340,12 +381,34 @@ class MotoLink(
                         out.flush()
                     }
                     frames++
-                    MiniState.update("正在投送 · ${frames} 帧")
-                    MiniState.setPxc("投送中 · ${frames} 帧", Stage.OK)
+                    if (frames == 1) {
+                        MiniState.update("正在投送")
+                        MiniState.setPxc("投送中", Stage.OK)
+                    }
+                }
+            }
+            else -> {
+                val key = -cmd
+                if (loggedUnknownCommands.add(key)) {
+                    log(
+                        "[PXC] media unknown cmd=$cmd len=${body.size} " +
+                            "hex=${body.toHexPreview()}",
+                    )
                 }
             }
         }
     }
+
+    private fun logUnknownControl(frame: PxcFrame) {
+        if (!loggedUnknownCommands.add(frame.cmd)) return
+        log(
+            "[PXC] control unknown cmd=${frame.cmdHex()} len=${frame.payload.size} " +
+                "hex=${frame.payload.toHexPreview()}",
+        )
+    }
+
+    private fun ByteArray.toHexPreview(maxBytes: Int = 64): String =
+        take(maxBytes).joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
     /**
      * The bike may reboot, the SoftAP may disappear, or a half-open socket can stop pulling
@@ -422,6 +485,8 @@ class MotoLink(
                     closeBikeConnections()
                     captureSeen = false
                     frames = 0
+        negotiatedWidth = 0
+        negotiatedHeight = 0
                     lastPullAt = 0
                     Thread.sleep(delayMs)
                     if (!running.get()) return@synchronized

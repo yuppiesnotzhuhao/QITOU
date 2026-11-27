@@ -41,8 +41,16 @@ object MiniState {
 
     @Volatile var running: Boolean = false
     @Volatile var serviceActive: Boolean = false
+    @Volatile var localOnly: Boolean = false
     @Volatile var status: String = "未启动"
     @Volatile var framesPerSecond: Int = 0
+    @Volatile var sourceWidth: Int = 1280
+    @Volatile var sourceHeight: Int = 480
+    @Volatile var outputWidth: Int = 800
+    @Volatile var outputHeight: Int = 386
+    @Volatile var outputFit: String = "完整显示"
+    @Volatile var decoderCodec: String = "未启动"
+    @Volatile var encoderCodec: String = "未启动"
     @Volatile var lastLog: String = ""
     @Volatile var vehicleName: String = ""
     @Volatile var wifiText: String = "未连接"
@@ -93,6 +101,35 @@ object MiniState {
 
     fun setVehicle(name: String) {
         vehicleName = name
+        listener?.invoke()
+    }
+
+    fun setSourceSize(width: Int, height: Int) {
+        if (width > 0) sourceWidth = width
+        if (height > 0) sourceHeight = height
+        listener?.invoke()
+    }
+
+    fun setOutputSize(width: Int, height: Int, fit: String) {
+        if (width > 0) outputWidth = width
+        if (height > 0) outputHeight = height
+        outputFit = fit
+        listener?.invoke()
+    }
+
+    fun updateDecoderCodec(codec: String) {
+        decoderCodec = codec
+        listener?.invoke()
+    }
+
+    fun updateEncoderCodec(codec: String) {
+        encoderCodec = codec
+        listener?.invoke()
+    }
+
+    fun resetVideoCodecs() {
+        decoderCodec = "未启动"
+        encoderCodec = "未启动"
         listener?.invoke()
     }
 
@@ -161,6 +198,7 @@ object MiniState {
      */
     fun exportLog(context: Context): File {
         attach(context)
+        AudioVolumeStore.attach(context)
         runCatching { logExecutor.submit {}.get(2, TimeUnit.SECONDS) }
         val shareDir = File(context.cacheDir, "shared").apply { mkdirs() }
         File(shareDir, "QITOU-support.log").delete()
@@ -182,6 +220,19 @@ object MiniState {
             appendLine("audio=${audioText}")
             appendLine("bluetooth=${bluetoothText}")
             appendLine("fps=$framesPerSecond")
+            appendLine("source=$sourceWidth x $sourceHeight")
+            appendLine("output=$outputWidth x $outputHeight")
+            appendLine("fit=$outputFit")
+            appendLine("decoderCodec=$decoderCodec")
+            appendLine("encoderCodec=$encoderCodec")
+            appendLine(
+                "sourceRequest=${VehicleDisplayProfileStore.load(context).sourceRequest.label}",
+            )
+            val audio = AudioVolumeStore.current
+            appendLine("mediaVolume=${audio.mediaPercent}%")
+            appendLine("navigationVolume=${audio.navigationPercent}%")
+            appendLine("autoDuck=${audio.duckMediaDuringNavigation}")
+            appendLine("audioRoute=${audio.outputRoute.storageValue}")
             appendLine("status=$status")
             appendLine("----------------------------------------")
         }

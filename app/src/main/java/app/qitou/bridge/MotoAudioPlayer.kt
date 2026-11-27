@@ -31,11 +31,17 @@ class MotoAudioPlayer(
     private var ttsChannels = 0
     private var lastRestore: Runnable? = null
     private var activeRouteId = -1
+    private var ducking = false
     @Volatile private var settings = AudioVolumeStore.current
 
     private val settingsListener: (AudioVolumeSettings) -> Unit = { value ->
         main.post {
             settings = value
+            log(
+                "[AUDIO] mix media=${value.mediaPercent}% " +
+                    "navigation=${value.navigationPercent}% " +
+                    "duck=${value.duckMediaDuringNavigation} route=${value.outputRoute.storageValue}",
+            )
             refreshRouteAndVolumes()
         }
     }
@@ -113,6 +119,10 @@ class MotoAudioPlayer(
         mediaChannels = channels
         media = create(rate, channels, AudioAttributes.USAGE_MEDIA, AudioAttributes.CONTENT_TYPE_MUSIC, device)
         applyMediaVolume()
+        log(
+            "[AUDIO] media track ${rate}Hz ${channels}ch volume=" +
+                "${(settings.mediaGain * 100).toInt()}%",
+        )
         log("[AUDIO] media ${rate}Hz ${channels}ch via ${routeLabel()}")
         if (media == null) MiniState.setAudio("${routeLabel()} · 媒体输出不可用", Stage.ERROR)
     }
@@ -130,6 +140,10 @@ class MotoAudioPlayer(
             device,
         )
         applyNavigationVolume()
+        log(
+            "[AUDIO] navigation track ${rate}Hz ${channels}ch volume=" +
+                "${(settings.navigationGain * 100).toInt()}%",
+        )
         log("[AUDIO] navigation ${rate}Hz ${channels}ch via ${routeLabel()}")
         if (tts == null) MiniState.setAudio("${routeLabel()} · 导航输出不可用", Stage.ERROR)
     }
@@ -253,11 +267,20 @@ class MotoAudioPlayer(
             cancelDuckAndRestore()
             return
         }
-        media?.setVolume(settings.mediaGain * DUCK_GAIN)
+        val duckedGain = settings.mediaGain * DUCK_GAIN
+        media?.setVolume(duckedGain)
+        if (!ducking) {
+            ducking = true
+            log("[AUDIO] duck media to ${(duckedGain * 100).toInt()}%")
+        }
         lastRestore?.let(main::removeCallbacks)
         lastRestore = Runnable {
             synchronized(audioLock) {
                 media?.setVolume(settings.mediaGain)
+                if (ducking) {
+                    ducking = false
+                    log("[AUDIO] restore media to ${(settings.mediaGain * 100).toInt()}%")
+                }
                 lastRestore = null
             }
         }.also { main.postDelayed(it, 900) }
@@ -292,6 +315,7 @@ class MotoAudioPlayer(
         lastRestore?.let(main::removeCallbacks)
         lastRestore = null
         media?.setVolume(settings.mediaGain)
+        ducking = false
     }
 
     private fun releaseTracksLocked() {
@@ -310,6 +334,7 @@ class MotoAudioPlayer(
         ttsRate = 0
         ttsChannels = 0
         activeRouteId = -1
+        ducking = false
     }
 
     fun stop() {

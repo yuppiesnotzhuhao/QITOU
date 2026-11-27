@@ -9,7 +9,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
-import android.os.SystemClock
 import android.text.InputType
 import android.text.TextUtils
 import android.view.Gravity
@@ -53,24 +52,31 @@ class MiniActivity : ComponentActivity() {
     private lateinit var audioToggleButton: Button
     private lateinit var advancedBody: LinearLayout
     private lateinit var advancedToggleButton: Button
+    private lateinit var carPlusHint: TextView
+    private lateinit var displayProfileSummary: TextView
+    private lateinit var carlifeSourceSummary: TextView
     private lateinit var phoneRouteButton: Button
     private lateinit var bikeRouteButton: Button
     private lateinit var preview: TextureView
     private var previewSurface: Surface? = null
     private lateinit var previewHint: TextView
+    private lateinit var localPreviewCard: LinearLayout
+    private lateinit var bikePreview: TextureView
+    private lateinit var bikePreviewHint: TextView
+    private var bikePreviewSurface: Surface? = null
+    private var bikePreviewAttached = false
     private lateinit var rowVehicle: TextView
     private lateinit var rowWifi: TextView
     private lateinit var rowCar: TextView
     private lateinit var rowPxc: TextView
     private lateinit var rowAudio: TextView
     private lateinit var rowBluetooth: TextView
+    private lateinit var rowDecoder: TextView
+    private lateinit var rowEncoder: TextView
     private var attached = false
     private var lastX = 0
     private var lastY = 0
     private var autoConnectAttempted = false
-    private var pendingHonorLaunch = false
-    private var pendingHonorSourceOnly = false
-    private var pendingHonorLaunchAt = 0L
     private var permissionPurpose = PermissionPurpose.START_BRIDGE
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -132,20 +138,22 @@ class MiniActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        finishPendingHonorLaunchIfNeeded()
         MiniState.listener = { runOnUiThread(::render) }
         attachPreview()
+        attachBikePreview()
         render()
     }
 
     override fun onPause() {
         MiniState.listener = null
         detachPreview()
+        detachBikePreview()
         super.onPause()
     }
 
     override fun onDestroy() {
         MiniState.listener = null
+        detachBikePreview()
         super.onDestroy()
     }
 
@@ -190,14 +198,14 @@ class MiniActivity : ComponentActivity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "手机控制画面"
+            text = "手机车联操作画面"
             setTextColor(color(R.color.text_heading))
             textSize = 26f
             typeface = Typeface.DEFAULT_BOLD
             setPadding(0, dp(18), 0, 0)
         })
         root.addView(TextView(this).apply {
-            text = "画面直接显示在应用内，触摸这里即可控制手机车联。"
+            text = "直接显示手机车联画面，触摸这里即可操作。"
             setTextColor(color(R.color.text_body))
             textSize = 13f
             setPadding(0, dp(4), 0, dp(10))
@@ -270,7 +278,7 @@ class MiniActivity : ComponentActivity() {
         ))
         root.addView(previewFrame, linearParams(height = 150, bottom = 10))
 
-        fullscreenButton = secondaryButton("全屏控制画面") {
+        fullscreenButton = secondaryButton("全屏操作画面") {
             if (MiniRuntime.pipeline == null || !MiniState.running) {
                 Toast.makeText(this@MiniActivity, "请先启动投送", Toast.LENGTH_SHORT).show()
             } else {
@@ -278,6 +286,100 @@ class MiniActivity : ComponentActivity() {
             }
         }
         root.addView(fullscreenButton, linearParams(height = 48, bottom = 12))
+
+        localPreviewCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        localPreviewCard.addView(TextView(this).apply {
+            text = "车机输出预览"
+            setTextColor(color(R.color.text_heading))
+            textSize = 26f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, dp(18), 0, 0)
+        })
+        localPreviewCard.addView(TextView(this).apply {
+            text = "无需连接摩托车机；这里显示实际准备发送的车机输出，可检查适配和黑边。"
+            setTextColor(color(R.color.text_body))
+            textSize = 13f
+            setPadding(0, dp(4), 0, dp(10))
+        })
+        val bikePreviewFrame = FrameLayout(this).apply {
+            setBackground(
+                rounded(
+                    color(R.color.surface_preview),
+                    18,
+                    stroke = color(R.color.stroke_preview),
+                ),
+            )
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+        }
+        val bikePreviewClip = FrameLayout(this).apply {
+            setBackground(rounded(android.graphics.Color.BLACK, 12))
+            clipToOutline = true
+        }
+        bikePreview = TextureView(this).apply {
+            contentDescription = "车机输出预览"
+            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(
+                    surfaceTexture: SurfaceTexture,
+                    width: Int,
+                    height: Int,
+                ) {
+                    surfaceTexture.setDefaultBufferSize(width, height)
+                    attachBikePreview(width, height)
+                }
+
+                override fun onSurfaceTextureSizeChanged(
+                    surfaceTexture: SurfaceTexture,
+                    width: Int,
+                    height: Int,
+                ) {
+                    surfaceTexture.setDefaultBufferSize(width, height)
+                    if (bikePreviewAttached) {
+                        MiniRuntime.pipeline?.updateBikePreviewSize(width, height)
+                    } else {
+                        attachBikePreview(width, height)
+                    }
+                }
+
+                override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+                    detachBikePreview()
+                    return true
+                }
+
+                override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
+            }
+        }
+        bikePreviewClip.addView(
+            bikePreview,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        bikePreviewFrame.addView(
+            bikePreviewClip,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        bikePreviewHint = TextView(this).apply {
+            text = "等待手机车联画面"
+            setTextColor(color(R.color.text_on_video))
+            textSize = 13f
+            gravity = Gravity.CENTER
+        }
+        bikePreviewFrame.addView(
+            bikePreviewHint,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        localPreviewCard.addView(bikePreviewFrame, linearParams(height = 150))
+        root.addView(localPreviewCard, linearParams(bottom = 12))
 
         val statusCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -320,6 +422,10 @@ class MiniActivity : ComponentActivity() {
             rowAudio = it.first
             rowBluetooth = it.second
         }
+        addStatusPair(statusCard, "解码", "未启动", "编码", "未启动").let {
+            rowDecoder = it.first
+            rowEncoder = it.second
+        }
         root.addView(statusCard, linearParams(bottom = 14))
 
         val connectionCard = LinearLayout(this).apply {
@@ -355,9 +461,9 @@ class MiniActivity : ComponentActivity() {
                 }
             }
         }
-        connectionCard.addView(action, linearParams(height = 52, bottom = 7))
+        connectionCard.addView(action, linearParams(height = 52, bottom = 7, top = 10))
         autoConnectSwitch = Switch(this).apply {
-            text = "启动时自动连接已保存车辆"
+            text = "启动骑投时自动连接"
             setTextColor(color(R.color.text_body))
             textSize = 13f
             isChecked = AutoConnectStore.isEnabled(this@MiniActivity)
@@ -375,7 +481,7 @@ class MiniActivity : ComponentActivity() {
         }
         connectionCard.addView(autoConnectSwitch)
         connectionCard.addView(TextView(this).apply {
-            text = "默认关闭；仅在保存过车机且当前未投送时自动连接。"
+            text = "开启后，每次打开骑投都会尝试连接已保存车辆。"
             setTextColor(color(R.color.text_body))
             textSize = 11f
             setLineSpacing(0f, 1.1f)
@@ -403,7 +509,7 @@ class MiniActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
         }
         audioText.addView(TextView(this).apply {
-            text = "音量与混音"
+            text = "声音与音量"
             setTextColor(color(R.color.text_heading))
             textSize = 16f
             typeface = Typeface.DEFAULT_BOLD
@@ -425,7 +531,8 @@ class MiniActivity : ComponentActivity() {
             visibility = View.GONE
         }
         audioBody.addView(TextView(this).apply {
-            text = "只调整${Brand.CHINESE_NAME}接收到的 CarLife 音频；摩托车或耳机总音量仍由 A2DP 控制。"
+            text = "这里只调整车联音频在${Brand.CHINESE_NAME}内的混音；" +
+                "系统音量和车机蓝牙音量仍由对应设备控制。"
             setTextColor(color(R.color.text_body))
             textSize = 12f
             setPadding(0, dp(6), 0, dp(7))
@@ -522,8 +629,8 @@ class MiniActivity : ComponentActivity() {
             addView(bikeRouteButton, weighted(left = 10))
         }, linearParams(height = 48, bottom = 3))
         audioBody.addView(TextView(this).apply {
-            text = "“手机”使用 Android 当前默认媒体输出，可能是有线/蓝牙耳机或扬声器；" +
-                "“车机蓝牙”只使用已连接的摩托车 A2DP，未连接时不会自动回退。"
+            text = "“手机”跟随系统当前媒体输出（扬声器或耳机）；" +
+                "“车机蓝牙”仅使用已连接的摩托车 A2DP。"
             setTextColor(color(R.color.text_body))
             textSize = 11f
             setLineSpacing(0f, 1.1f)
@@ -553,7 +660,7 @@ class MiniActivity : ComponentActivity() {
             typeface = Typeface.DEFAULT_BOLD
         })
         advancedText.addView(TextView(this).apply {
-            text = "重新配对、车联恢复、日志与系统设置"
+            text = "重新配对、画面与分辨率、日志与系统设置"
             setTextColor(color(R.color.text_body))
             textSize = 12f
             setPadding(0, dp(3), 0, 0)
@@ -580,6 +687,36 @@ class MiniActivity : ComponentActivity() {
         }
         advancedBody.addView(scanButton, linearParams(height = 48, bottom = 8))
 
+        advancedBody.addView(secondaryButton("不连车机查看输出预览") {
+            startLocalDiagnosticMode()
+        }, linearParams(height = 48, bottom = 3))
+        advancedBody.addView(TextView(this).apply {
+            text = "只启动手机车联接收和本地输出预览，不连接 MotoPlay。"
+            setTextColor(color(R.color.text_body))
+            textSize = 11f
+            setPadding(dp(4), 0, 0, dp(8))
+        })
+
+        advancedBody.addView(secondaryButton("车机画面适配") {
+            showDisplayProfileDialog()
+        }, linearParams(height = 48, bottom = 3))
+        displayProfileSummary = TextView(this).apply {
+            setTextColor(color(R.color.text_body))
+            textSize = 11f
+            setPadding(dp(4), 0, 0, dp(8))
+        }
+        advancedBody.addView(displayProfileSummary)
+
+        advancedBody.addView(secondaryButton("CarLife 源分辨率请求") {
+            showCarlifeSourceDialog()
+        }, linearParams(height = 48, bottom = 3))
+        carlifeSourceSummary = TextView(this).apply {
+            setTextColor(color(R.color.text_body))
+            textSize = 11f
+            setPadding(dp(4), 0, 0, dp(8))
+        }
+        advancedBody.addView(carlifeSourceSummary)
+
         advancedBody.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(secondaryButton("手动 Wi-Fi") { showManualPairing() }, weighted())
@@ -588,20 +725,25 @@ class MiniActivity : ComponentActivity() {
             }, weighted(left = 10))
         }, linearParams(height = 48, bottom = 8))
 
-        carPlusButton = secondaryButton("重新打开手机车联") {
-            CarPlusLauncher.launch(this@MiniActivity, MiniState::log)
+        carPlusButton = secondaryButton("重新打开车联应用") {
+            if (CarPlusLauncher.canUseHonorLocalPresentation(this@MiniActivity)) {
+                CarPlusLauncher.launchHonorLocalPresentation(
+                    this@MiniActivity,
+                    MiniState::log,
+                )
+                showHonorConnectionGuideToast()
+            } else {
+                CarPlusLauncher.launch(this@MiniActivity, MiniState::log)
+            }
         }
         advancedBody.addView(carPlusButton, linearParams(height = 48, bottom = 3))
-        advancedBody.addView(TextView(this).apply {
-            text = if (CarPlusLauncher.requiresHonorGuide(this@MiniActivity)) {
-                "荣耀手机请进入“无线 WLAN 连接”，等待页面显示“正在连接”"
-            } else {
-                "仅在投送过程中车联应用被关闭时使用"
-            }
+        carPlusHint = TextView(this).apply {
+            text = "连接车机 Wi-Fi 后可重新打开车联应用"
             setTextColor(color(R.color.text_body))
             textSize = 11f
             setPadding(dp(4), 0, 0, 0)
-        }, linearParams(bottom = 8))
+        }
+        advancedBody.addView(carPlusHint, linearParams(bottom = 8))
 
         advancedBody.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -610,6 +752,7 @@ class MiniActivity : ComponentActivity() {
             }, weighted())
             addView(secondaryButton("导出诊断包") { shareLogs() }, weighted(left = 10))
         }, linearParams(height = 48, bottom = 4))
+
         advancedCard.addView(advancedBody)
         root.addView(advancedCard, linearParams(bottom = 14))
 
@@ -618,20 +761,28 @@ class MiniActivity : ComponentActivity() {
         }, linearParams(height = 48, bottom = 18))
 
         root.addView(TextView(this).apply {
-            text = "使用步骤\n" +
-                "1. 首次点“扫码连接车机”；以后点“连接已保存车辆”或开启启动自动连接\n" +
-                if (CarPlusLauncher.requiresHonorGuide(this@MiniActivity)) {
-                    "2. 荣耀车联中先连接仪表蓝牙，再选择“无线 WLAN 连接”并开始连接\n" +
-                        "3. 返回骑投；检测到“正在连接”后会自动接收画面\n" +
-                        "4. 保持仪表在手机互联页面；断线后会自动重连\n" +
-                        "5. 在“手机控制画面”或“全屏控制”中操作车联画面"
-                } else {
-                    "2. 在手机车联应用中选择 CarLife 无线连接\n" +
-                        "3. 保持仪表在手机互联页面；断线后会自动重连\n" +
-                        "4. 在“手机控制画面”或“全屏控制”中操作车联画面"
-                }
+            text = "使用步骤"
+            setTextColor(color(R.color.text_heading))
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, dp(2), 0, dp(6))
+        })
+        root.addView(TextView(this).apply {
+            text = if (CarPlusLauncher.canUseHonorLocalPresentation(this@MiniActivity)) {
+                "1. 首次使用：在仪表打开 MotoPlay，再点“扫码连接车机”\n" +
+                    "2. 后续直接点“连接已保存车辆”，骑投会尝试连接车机 Wi-Fi\n" +
+                    "3. 在荣耀车联中选择“无线 WLAN 连接”，再点“开始连接”\n" +
+                    "4. 看到车联桌面后返回骑投，并保持仪表停留在 MotoPlay 页面\n" +
+                    "5. 在手机内操作画面或全屏画面中控制车联"
+            } else {
+                "1. 首次使用：在仪表打开 MotoPlay，再点“扫码连接车机”\n" +
+                    "2. 后续直接点“连接已保存车辆”，骑投会尝试连接车机 Wi-Fi\n" +
+                    "3. 在手机车联应用中选择“CarLife 无线连接”\n" +
+                    "4. 保持仪表停留在 MotoPlay 手机互联页面\n" +
+                    "5. 在手机内操作画面或全屏画面中控制车联"
+            }
             setTextColor(color(R.color.text_body))
-            textSize = 14f
+            textSize = 13f
             setLineSpacing(0f, 1.15f)
         })
 
@@ -858,6 +1009,267 @@ class MiniActivity : ComponentActivity() {
         )
     }
 
+    private fun startLocalDiagnosticMode() {
+        if (MiniState.serviceActive) {
+            Toast.makeText(
+                this,
+                if (MiniState.localOnly) "车机输出预览已经在运行" else "请先停止当前车机投送",
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        startCarLifeInput(sourceOnly = true)
+        Toast.makeText(
+            this,
+            "正在启动车机输出预览，不会连接摩托车机",
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+
+    private fun showDisplayProfileDialog() {
+        val current = VehicleDisplayProfileStore.load(this)
+        var selectedMode = current.mode
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(4), dp(20), 0)
+        }
+        content.addView(TextView(this).apply {
+            text = "车机画布：${MiniState.outputWidth}×${MiniState.outputHeight}\n" +
+                "手机车联源：${MiniState.sourceWidth}×${MiniState.sourceHeight}\n\n" +
+                "“完整显示”保证内容不被裁切；“铺满裁切”会放大并裁边。" +
+                "宽高填写 0 表示跟随车机上报尺寸；自定义分辨率在重新连接后生效。" +
+                "若车机系统把仪表信息叠加在视频上，请填写对应的四边安全区。"
+            setTextColor(color(R.color.dialog_message))
+            textSize = 13f
+            setLineSpacing(0f, 1.12f)
+        }, linearParams(bottom = 10))
+
+        val modeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        val fitButton = secondaryButton("完整显示") {}
+        val fillButton = secondaryButton("铺满裁切") {}
+        val stretchButton = secondaryButton("拉伸铺满") {}
+        fun renderModeButtons() {
+            styleRouteButton(fitButton, selectedMode == DisplayScaleMode.FIT)
+            styleRouteButton(fillButton, selectedMode == DisplayScaleMode.FILL)
+            styleRouteButton(stretchButton, selectedMode == DisplayScaleMode.STRETCH)
+        }
+        fitButton.setOnClickListener {
+            selectedMode = DisplayScaleMode.FIT
+            renderModeButtons()
+        }
+        fillButton.setOnClickListener {
+            selectedMode = DisplayScaleMode.FILL
+            renderModeButtons()
+        }
+        stretchButton.setOnClickListener {
+            selectedMode = DisplayScaleMode.STRETCH
+            renderModeButtons()
+        }
+        modeRow.addView(fitButton, weighted())
+        modeRow.addView(fillButton, weighted(left = 8))
+        modeRow.addView(stretchButton, weighted(left = 8))
+        content.addView(modeRow, linearParams(height = 44, bottom = 10))
+        renderModeButtons()
+
+        fun numberField(label: String, value: Int): Pair<LinearLayout, EditText> {
+            val input = EditText(this).apply {
+                setText(value.toString())
+                inputType = InputType.TYPE_CLASS_NUMBER
+                setSingleLine(true)
+                textSize = 14f
+                setTextColor(color(R.color.dialog_input_text))
+                setHintTextColor(color(R.color.dialog_input_hint))
+                setBackgroundResource(R.drawable.bg_qitou_dialog_input)
+                setPadding(dp(10), 0, dp(10), 0)
+            }
+            val cell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(this@MiniActivity).apply {
+                    text = label
+                    setTextColor(color(R.color.dialog_hint))
+                    textSize = 11f
+                })
+                addView(input, linearParams(height = 44, bottom = 0))
+            }
+            return cell to input
+        }
+
+        val (outputWidthCell, outputWidthInput) = numberField(
+            "自定义宽（0=跟随）",
+            current.customWidth,
+        )
+        val (outputHeightCell, outputHeightInput) = numberField(
+            "自定义高（0=跟随）",
+            current.customHeight,
+        )
+        content.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(outputWidthCell, weighted())
+            addView(outputHeightCell, weighted(left = 10))
+        }, linearParams(bottom = 8))
+        content.addView(secondaryButton("恢复跟随车机尺寸") {
+            outputWidthInput.setText("0")
+            outputHeightInput.setText("0")
+        }, linearParams(height = 44, bottom = 8))
+
+        val (topCell, topInput) = numberField("上安全区（px）", current.insets.top)
+        val (bottomCell, bottomInput) = numberField("下安全区（px）", current.insets.bottom)
+        val (leftCell, leftInput) = numberField("左安全区（px）", current.insets.left)
+        val (rightCell, rightInput) = numberField("右安全区（px）", current.insets.right)
+        content.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(topCell, weighted())
+            addView(bottomCell, weighted(left = 10))
+        }, linearParams(bottom = 8))
+        content.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(leftCell, weighted())
+            addView(rightCell, weighted(left = 10))
+        }, linearParams(bottom = 8))
+        content.addView(secondaryButton("清零安全区") {
+            topInput.setText("0")
+            bottomInput.setText("0")
+            leftInput.setText("0")
+            rightInput.setText("0")
+        }, linearParams(height = 44))
+
+        fun readNumber(input: EditText, fallback: Int): Int =
+            input.text?.toString()?.toIntOrNull()?.coerceAtLeast(0) ?: fallback
+
+        CarDialogs.builder(this)
+            .setTitle("车机画面适配")
+            .setView(content)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("保存") { _, _ ->
+                var customWidth = readNumber(outputWidthInput, current.customWidth)
+                var customHeight = readNumber(outputHeightInput, current.customHeight)
+                val validCustom = customWidth == 0 && customHeight == 0 ||
+                    customWidth in 240..1920 && customHeight in 240..1080
+                if (!validCustom) {
+                    customWidth = 0
+                    customHeight = 0
+                    Toast.makeText(
+                        this,
+                        "自定义分辨率需在 240–1920 × 240–1080 之间，已恢复跟随车机",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                val profile = VehicleDisplayProfile(
+                    mode = selectedMode,
+                    insets = CanvasInsets(
+                        top = readNumber(topInput, current.insets.top),
+                        bottom = readNumber(bottomInput, current.insets.bottom),
+                        left = readNumber(leftInput, current.insets.left),
+                        right = readNumber(rightInput, current.insets.right),
+                    ),
+                    customWidth = customWidth,
+                    customHeight = customHeight,
+                    sourceWidth = current.sourceWidth,
+                    sourceHeight = current.sourceHeight,
+                )
+                VehicleDisplayProfileStore.save(this, profile)
+                val outputChanged = current.customWidth != profile.customWidth ||
+                    current.customHeight != profile.customHeight
+                if (outputChanged && MiniState.serviceActive) {
+                    Toast.makeText(
+                        this,
+                        "自定义分辨率已保存，重新连接后生效",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } else {
+                    MiniRuntime.pipeline?.updateCanvasLayout(
+                        profile.mode.screenFit(),
+                        profile.insets,
+                    )
+                    MiniState.setOutputSize(
+                        MiniState.outputWidth,
+                        MiniState.outputHeight,
+                        profile.summary(),
+                    )
+                    Toast.makeText(this, "画面适配已保存并应用", Toast.LENGTH_SHORT).show()
+                }
+                MiniState.log("[DISPLAY] ${profile.summary()}")
+                render()
+            }
+            .show()
+    }
+
+    private fun showCarlifeSourceDialog() {
+        val currentProfile = VehicleDisplayProfileStore.load(this)
+        var selected = currentProfile.sourceRequest
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(4), dp(20), 0)
+        }
+        content.addView(TextView(this).apply {
+            text = "这是向手机 CarLife 发送端请求的视频编码尺寸，不影响车机输出分辨率。\n\n" +
+                "当前实际收到：${MiniState.sourceWidth}×${MiniState.sourceHeight}。\n" +
+                "部分车联应用会忽略请求并使用自己的白名单尺寸；日志会以实际 SPS 为准。"
+            setTextColor(color(R.color.dialog_message))
+            textSize = 13f
+            setLineSpacing(0f, 1.12f)
+        }, linearParams(bottom = 10))
+
+        val choiceButtons = mutableListOf<Pair<CarlifeSourceResolution, Button>>()
+        fun renderChoices() {
+            choiceButtons.forEach { (resolution, button) ->
+                styleRouteButton(button, resolution == selected)
+            }
+        }
+        val grid = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        CarlifeSourceResolutions.presets.chunked(2).forEachIndexed { rowIndex, rowPresets ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            rowPresets.forEachIndexed { index, resolution ->
+                val button = secondaryButton(resolution.label) {
+                    selected = resolution
+                    renderChoices()
+                }
+                choiceButtons += resolution to button
+                row.addView(button, weighted(left = if (index == 0) 0 else 8))
+            }
+            if (rowPresets.size == 1) {
+                row.addView(View(this), weighted(left = 8))
+            }
+            grid.addView(row, linearParams(height = 44, bottom = if (rowIndex == 2) 0 else 8))
+        }
+        content.addView(grid)
+        renderChoices()
+
+        CarDialogs.builder(this)
+            .setTitle("CarLife 源分辨率请求")
+            .setView(content)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("保存") { _, _ ->
+                val updated = VehicleDisplayProfile(
+                    mode = currentProfile.mode,
+                    insets = currentProfile.insets,
+                    customWidth = currentProfile.customWidth,
+                    customHeight = currentProfile.customHeight,
+                    sourceWidth = selected.width,
+                    sourceHeight = selected.height,
+                )
+                VehicleDisplayProfileStore.save(this, updated)
+                MiniState.log("[CAR+] source request set to ${selected.label}")
+                render()
+                Toast.makeText(
+                    this,
+                    if (MiniState.serviceActive) {
+                        "已保存 ${selected.label}，重新连接后生效"
+                    } else {
+                        "已保存 CarLife 源分辨率请求：${selected.label}"
+                    },
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            .show()
+    }
+
     private fun requestBikeAudioRoute() {
         if (Build.VERSION.SDK_INT < 31 ||
             checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
@@ -912,6 +1324,7 @@ class MiniActivity : ComponentActivity() {
 
     private fun showBackgroundRunSettings() {
         val ignoringOptimization = SystemLinks.isIgnoringBatteryOptimizations(this)
+        val backgroundGuide = BackgroundRestrictionGuide.forManufacturer(Build.MANUFACTURER)
         val padding = dp(20)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -919,7 +1332,7 @@ class MiniActivity : ComponentActivity() {
         }
         content.addView(TextView(this).apply {
             text = "建议先允许系统电池优化。只有随后仍出现息屏断连或画面停更时，" +
-                "再检查 ColorOS 后台行为。"
+                "再检查${backgroundGuide.title}。"
             setTextColor(color(R.color.dialog_message))
             textSize = 14f
             setLineSpacing(0f, 1.12f)
@@ -942,6 +1355,7 @@ class MiniActivity : ComponentActivity() {
                     addView(TextView(this@MiniActivity).apply {
                         text = step
                         gravity = Gravity.CENTER
+                        includeFontPadding = false
                         setTextColor(color(R.color.accent_on_primary))
                         textSize = 13f
                         typeface = Typeface.DEFAULT_BOLD
@@ -951,12 +1365,16 @@ class MiniActivity : ComponentActivity() {
                     })
                     addView(TextView(this@MiniActivity).apply {
                         text = title
+                        gravity = Gravity.CENTER_VERTICAL
+                        includeFontPadding = false
                         setTextColor(color(R.color.dialog_title))
                         textSize = 15f
                         typeface = Typeface.DEFAULT_BOLD
                     }, weighted())
                     addView(TextView(this@MiniActivity).apply {
                         text = status
+                        gravity = Gravity.CENTER_VERTICAL
+                        includeFontPadding = false
                         setTextColor(statusColor)
                         textSize = 12f
                         typeface = Typeface.DEFAULT_BOLD
@@ -979,13 +1397,13 @@ class MiniActivity : ComponentActivity() {
         })
         content.addView(batteryCard, linearParams(bottom = 10))
 
-        val colorOsCard = stepCard(
+        val oemCard = stepCard(
             "2",
-            "ColorOS 后台行为",
+            backgroundGuide.title,
             "可选",
             color(R.color.text_label),
         )
-        colorOsCard.addView(TextView(this).apply {
+        oemCard.addView(TextView(this).apply {
             text = "仅当第 1 项设置后仍然投送不稳定时，再打开应用详情，按以下顺序检查："
             setTextColor(color(R.color.dialog_message))
             textSize = 13f
@@ -1002,7 +1420,7 @@ class MiniActivity : ComponentActivity() {
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             }
         }
-        colorOsCard.addView(LinearLayout(this).apply {
+        oemCard.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -1013,25 +1431,27 @@ class MiniActivity : ComponentActivity() {
                     stroke = color(R.color.dialog_input_stroke),
                 ),
             )
-            addView(pathText("应用信息"))
-            addView(pathText("→").apply {
-                setTextColor(color(R.color.dialog_action))
-                gravity = Gravity.CENTER
-            }, LinearLayout.LayoutParams(dp(24), -2))
-            addView(pathText("耗电管理"))
-            addView(pathText("→").apply {
-                setTextColor(color(R.color.dialog_action))
-                gravity = Gravity.CENTER
-            }, LinearLayout.LayoutParams(dp(24), -2))
-            addView(pathText("完全允许后台行为", weightedStep = true), weighted())
+            backgroundGuide.path.forEachIndexed { index, segment ->
+                if (index > 0) {
+                    addView(pathText("→").apply {
+                        setTextColor(color(R.color.dialog_action))
+                        gravity = Gravity.CENTER
+                    }, LinearLayout.LayoutParams(dp(24), -2))
+                }
+                addView(
+                    pathText(segment, weightedStep = index == backgroundGuide.path.lastIndex),
+                    if (index == backgroundGuide.path.lastIndex) weighted()
+                    else LinearLayout.LayoutParams(-2, -2),
+                )
+            }
         })
-        colorOsCard.addView(TextView(this).apply {
-            text = "这一项不是强制设置；ColorOS 不开放状态读取，只能在需要时手动检查。"
+        oemCard.addView(TextView(this).apply {
+            text = "这一项不是强制设置；部分系统不开放状态读取，需要手动去应用详情页设置。"
             setTextColor(color(R.color.dialog_hint))
             textSize = 12f
             setPadding(0, dp(7), 0, 0)
         })
-        content.addView(colorOsCard, linearParams(bottom = 14))
+        content.addView(oemCard, linearParams(bottom = 14))
 
         val dialog = CarDialogs.builder(this)
             .setTitle("设置后台运行")
@@ -1073,40 +1493,25 @@ class MiniActivity : ComponentActivity() {
     }
 
     private fun startCarLifeInput(sourceOnly: Boolean) {
-        if (CarPlusLauncher.requiresHonorGuide(this)) {
-            pendingHonorLaunch = true
-            pendingHonorSourceOnly = sourceOnly
-            pendingHonorLaunchAt = SystemClock.elapsedRealtime()
-            MiniState.update("请在荣耀车联中完成“无线 WLAN 连接”")
-            MiniState.setCar("等待荣耀车联进入“正在连接”", Stage.WAIT)
-            CarPlusLauncher.launch(this, MiniState::log)
-            render()
-            return
+        if (CarPlusLauncher.canUseHonorLocalPresentation(this)) {
+            MiniState.update("请在荣耀车联页面点击“开始连接”")
+            MiniState.setCar("荣耀车联 · 等待点击“开始连接”", Stage.WAIT)
         }
 
         CarPlusBridgeService.start(this, sourceOnly = sourceOnly)
         CarPlusLauncher.launch(this, MiniState::log)
+        if (CarPlusLauncher.canUseHonorLocalPresentation(this)) {
+            showHonorConnectionGuideToast()
+        }
         render()
     }
 
-    private fun finishPendingHonorLaunchIfNeeded() {
-        if (!pendingHonorLaunch) return
-        if (SystemClock.elapsedRealtime() - pendingHonorLaunchAt < 750L) return
-
-        val sourceOnly = pendingHonorSourceOnly
-        pendingHonorLaunch = false
-        pendingHonorSourceOnly = false
-        pendingHonorLaunchAt = 0L
-
-        MiniState.update(
-            if (sourceOnly) {
-                "正在等待荣耀车联进入连接态"
-            } else {
-                "正在等待荣耀车联并启动投送"
-            },
-        )
-        CarPlusBridgeService.start(this, sourceOnly = sourceOnly)
-        render()
+    private fun showHonorConnectionGuideToast() {
+        Toast.makeText(
+            applicationContext,
+            "请在荣耀车联中选择“无线 WLAN 连接” → 点击“开始连接” → 看到车联桌面后返回骑投",
+            Toast.LENGTH_LONG,
+        ).show()
     }
 
     private fun showManualPairing() {
@@ -1256,6 +1661,29 @@ class MiniActivity : ComponentActivity() {
         attached = false
     }
 
+    private fun attachBikePreview(
+        width: Int = bikePreview.width,
+        height: Int = bikePreview.height,
+    ) {
+        if (!MiniState.localOnly || bikePreviewAttached) return
+        val pipe = MiniRuntime.pipeline ?: return
+        val texture = bikePreview.surfaceTexture ?: return
+        if (width <= 0 || height <= 0) return
+        texture.setDefaultBufferSize(width, height)
+        val surface = Surface(texture)
+        bikePreviewSurface = surface
+        pipe.attachBikePreview(surface, width, height)
+        bikePreviewAttached = true
+    }
+
+    private fun detachBikePreview() {
+        if (!bikePreviewAttached) return
+        runCatching { MiniRuntime.pipeline?.clearBikePreview() }
+        runCatching { bikePreviewSurface?.release() }
+        bikePreviewSurface = null
+        bikePreviewAttached = false
+    }
+
     private fun handlePreviewTouch(view: View, event: MotionEvent): Boolean {
         val pointer = if (event.actionMasked == MotionEvent.ACTION_POINTER_UP) {
             event.actionIndex
@@ -1310,7 +1738,7 @@ class MiniActivity : ComponentActivity() {
 
     private fun mapPoint(x: Float, y: Float, w: Int, h: Int): Pair<Int, Int>? {
         if (w <= 0 || h <= 0) return null
-        val sourceAspect = 1280f / 480f
+        val sourceAspect = MiniState.sourceWidth.toFloat() / MiniState.sourceHeight
         val viewAspect = w.toFloat() / h
         val drawW: Float
         val drawH: Float
@@ -1324,39 +1752,68 @@ class MiniActivity : ComponentActivity() {
         val left = (w - drawW) / 2f
         val top = (h - drawH) / 2f
         if (x < left || x >= left + drawW || y < top || y >= top + drawH) return null
-        return (((x - left) * 1280 / drawW).toInt().coerceIn(0, 1279)) to
-            (((y - top) * 480 / drawH).toInt().coerceIn(0, 479))
+        return (((x - left) * MiniState.sourceWidth / drawW).toInt()
+            .coerceIn(0, MiniState.sourceWidth - 1)) to
+            (((y - top) * MiniState.sourceHeight / drawH).toInt()
+                .coerceIn(0, MiniState.sourceHeight - 1))
     }
 
     private fun render() {
         if (!::status.isInitialized) return
-        status.text = MiniState.status
-        fps.text = if (MiniState.framesPerSecond > 0) {
-            "${MiniState.framesPerSecond} fps · 1280×480 控制源 · 800×384 车机输出"
-        } else {
-            "等待手机车联画面"
-        }
-        fps.setTextColor(
-            if (MiniState.serviceActive) color(R.color.success) else color(R.color.text_muted),
-        )
         val vehicle = MotoVehiclePrefs.load(this)
-        rowVehicle.text = vehicle?.displayName ?: MiniState.vehicleName.ifBlank { "未选择" }
+        status.text = MiniState.status
+        status.textSize = if (MiniState.status.length > 24) 18f else 21f
+        fps.text = if (MiniState.framesPerSecond > 0) {
+            "${MiniState.framesPerSecond} fps · " +
+                "${MiniState.sourceWidth}×${MiniState.sourceHeight} 控制源 · " +
+                "${MiniState.outputWidth}×${MiniState.outputHeight} 车机输出 · " +
+                MiniState.outputFit
+        } else if (MiniState.wifiStage == Stage.ERROR) {
+            "请保持仪表停留在 MotoPlay 页面，确认 Wi-Fi 热点可搜索后重试"
+        } else if (MiniState.serviceActive) {
+            "等待手机车联画面"
+        } else if (vehicle == null) {
+            "扫码或手动填写 Wi-Fi 后开始连接"
+        } else {
+            "点击“连接已保存车辆”开始"
+        }
+        fps.setTextColor(when {
+            MiniState.framesPerSecond > 0 -> color(R.color.success)
+            MiniState.wifiStage == Stage.ERROR -> color(R.color.warning)
+            MiniState.serviceActive -> color(R.color.text_body)
+            else -> color(R.color.text_muted)
+        })
+        rowVehicle.text = if (MiniState.localOnly) {
+            "本地诊断"
+        } else {
+            vehicle?.displayName ?: MiniState.vehicleName.ifBlank { "未选择" }
+        }
         rowWifi.text = MiniState.wifiText
         rowCar.text = MiniState.carText
         rowPxc.text = MiniState.pxcText
         rowAudio.text = MiniState.audioText
         rowBluetooth.text = MiniState.bluetoothText
+        rowDecoder.text = MiniState.decoderCodec
+        rowEncoder.text = MiniState.encoderCodec
         rowWifi.setTextColor(stageColor(MiniState.wifiStage))
         rowCar.setTextColor(stageColor(MiniState.carStage))
         rowPxc.setTextColor(stageColor(MiniState.pxcStage))
         rowAudio.setTextColor(stageColor(MiniState.audioStage))
         rowBluetooth.setTextColor(stageColor(MiniState.bluetoothStage))
-        action.text = if (MiniState.serviceActive) "停止投送" else {
+        rowDecoder.setTextColor(codecColor(MiniState.decoderCodec))
+        rowEncoder.setTextColor(codecColor(MiniState.encoderCodec))
+        action.text = if (MiniState.serviceActive) {
+            if (MiniState.localOnly) "停止本地画面" else "停止投送"
+        } else {
             if (vehicle == null) "扫码连接车机" else "连接已保存车辆"
         }
         scanButton.visibility = if (vehicle == null) View.GONE else View.VISIBLE
         rowVehicle.setTextColor(
-            if (vehicle == null) color(R.color.status_off) else color(R.color.success),
+            if (vehicle == null && !MiniState.localOnly) {
+                color(R.color.status_off)
+            } else {
+                color(R.color.success)
+            },
         )
         autoConnectSwitch.isEnabled = vehicle != null
         autoConnectSwitch.alpha = if (vehicle != null) 1f else 0.55f
@@ -1381,10 +1838,35 @@ class MiniActivity : ComponentActivity() {
         fullscreenButton.alpha = if (MiniState.running) 1f else 0.62f
         val carPlusAvailable = MiniState.wifiStage == Stage.OK
         carPlusButton.isEnabled = carPlusAvailable
-        carPlusButton.alpha = if (carPlusAvailable) 1f else 0.48f
+        carPlusButton.alpha = if (carPlusAvailable) 1f else 0.65f
+        val honorCarConnect = CarPlusLauncher.canUseHonorLocalPresentation(this)
+        carPlusButton.text = if (honorCarConnect) "重新打开荣耀车联" else "重新打开车联应用"
+        carPlusHint.text = when {
+            !carPlusAvailable -> "连接车机 Wi-Fi 后可重新打开车联应用"
+            honorCarConnect ->
+                "打开荣耀车联的“无线 WLAN 连接”页，再点“开始连接”"
+            else -> "仅在投送过程中车联应用被关闭时使用"
+        }
+        if (::displayProfileSummary.isInitialized) {
+            displayProfileSummary.text =
+                "当前：${VehicleDisplayProfileStore.load(this).summary()}"
+        }
+        if (::carlifeSourceSummary.isInitialized) {
+            carlifeSourceSummary.text =
+                "请求：${VehicleDisplayProfileStore.load(this).sourceRequest.label} · " +
+                "实际收到：${MiniState.sourceWidth}×${MiniState.sourceHeight}"
+        }
         if (::phoneRouteButton.isInitialized) renderAudioRouteButtons()
         previewHint.visibility = if (attached && MiniState.framesPerSecond > 0) View.GONE else View.VISIBLE
         if (MiniState.running) attachPreview()
+        localPreviewCard.visibility = if (MiniState.localOnly) View.VISIBLE else View.GONE
+        if (MiniState.localOnly) {
+            attachBikePreview()
+            bikePreviewHint.visibility =
+                if (MiniState.framesPerSecond > 0) View.GONE else View.VISIBLE
+        } else {
+            detachBikePreview()
+        }
     }
 
     private fun addStatusPair(
@@ -1403,6 +1885,13 @@ class MiniActivity : ComponentActivity() {
         parent.addView(row, linearParams(height = 48))
         return first to second
     }
+
+    private fun codecColor(value: String): Int =
+        if (MiniState.serviceActive && value != "未启动") {
+            color(R.color.success)
+        } else {
+            color(R.color.text_muted)
+        }
 
     private fun addStatusCell(
         parent: LinearLayout,
@@ -1542,11 +2031,15 @@ class MiniActivity : ComponentActivity() {
     private fun linearParams(
         width: Int = LinearLayout.LayoutParams.MATCH_PARENT,
         height: Int = -2,
+        top: Int = 0,
         bottom: Int = 0,
     ) = LinearLayout.LayoutParams(
         width,
         if (height > 0) dp(height) else height,
-    ).apply { bottomMargin = dp(bottom) }
+    ).apply {
+        topMargin = dp(top)
+        bottomMargin = dp(bottom)
+    }
 
     private fun gradient() = CarAppTheme.canvas(this)
 

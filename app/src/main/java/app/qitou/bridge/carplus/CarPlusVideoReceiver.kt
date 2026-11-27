@@ -41,7 +41,7 @@ class CarPlusVideoReceiver(
     private val onSessionEnded: () -> Unit = {},
     private val onAudioPacket: (isTts: Boolean, pcm: ByteArray, sampleRate: Int, channels: Int) -> Unit =
         { _, _, _, _ -> },
-) {
+) : CarLifeReceiver {
     companion object {
         private const val CONNECT_TIMEOUT_MS = 1_500
         private const val VERSION_TIMEOUT_MS = 15_000L
@@ -62,6 +62,7 @@ class CarPlusVideoReceiver(
     @Volatile private var touchWorker: Thread? = null
     @Volatile private var videoDead = false
     @Volatile private var versionMatched = false
+    @Volatile private var authResultReceived = false
     @Volatile private var featureConfigAcked = false
     @Volatile private var starterScheduled = false
     @Volatile private var readyFired = false
@@ -70,6 +71,7 @@ class CarPlusVideoReceiver(
     @Volatile private var lastTouchProbeAt = 0L
     @Volatile private var touchMissLogged = false
     @Volatile private var startupWarned = false
+    @Volatile private var loopbackMissLogged = false
     @Volatile private var lastFpsLogAt = 0L
 
     private val decoder = VideoDecoder().apply {
@@ -100,7 +102,7 @@ class CarPlusVideoReceiver(
         }
     }
 
-    fun start() {
+    override fun start() {
         if (!running.compareAndSet(false, true)) return
         AaLog.sink = log
         decoder.setSurface(surface)
@@ -121,10 +123,13 @@ class CarPlusVideoReceiver(
                         SystemClock.elapsedRealtime() - startedAt > STARTUP_TIMEOUT_MS
                     ) {
                         startupWarned = true
-                        log("[CAR+] local CarLife ports did not appear — complete the phone-side CarLife wireless connection")
+                        log(
+                            "[CAR+] local CarLife ports did not appear — " +
+                                "tap 开始连接 on the phone CarConnect page",
+                        )
                         MiniState.setCar(
-                            if (CarPlusLauncher.requiresHonorGuide(context)) {
-                                "荣耀车联尚未进入“正在连接”，请重新打开手机车联"
+                            if (CarPlusLauncher.canUseHonorLocalPresentation(context)) {
+                                "请在荣耀车联中点击“开始连接”"
                             } else {
                                 "未找到手机车联 CarLife 服务，请完成 CarLife 无线连接"
                             },
@@ -139,13 +144,13 @@ class CarPlusVideoReceiver(
                     when {
                         !running.get() -> MiniState.setCar("已停止", Stage.OFF)
                         established -> MiniState.setCar("CarLife 连接中断，正在重连", Stage.ERROR)
-                        startupWarned && CarPlusLauncher.requiresHonorGuide(context) ->
+                        startupWarned && CarPlusLauncher.canUseHonorLocalPresentation(context) ->
                             MiniState.setCar(
-                                "荣耀车联尚未进入“正在连接”，请重新打开手机车联",
+                                "荣耀车联未进入投送状态，请重新打开连接页",
                                 Stage.ERROR,
                             )
-                        CarPlusLauncher.requiresHonorGuide(context) -> MiniState.setCar(
-                            "等待荣耀车联进入“正在连接”",
+                        CarPlusLauncher.canUseHonorLocalPresentation(context) -> MiniState.setCar(
+                            "荣耀车联 · 等待点击“开始连接”",
                             Stage.WAIT,
                         )
                         else -> MiniState.setCar("等待手机车联 CarLife 服务", Stage.WAIT)
@@ -156,13 +161,13 @@ class CarPlusVideoReceiver(
         }
     }
 
-    fun stop() {
+    override fun stop() {
         if (!running.getAndSet(false)) return
         closeSession()
         try { decoder.stop("CarPlusVideoReceiver.stop") } catch (_: Exception) {}
     }
 
-    fun sendTouch(action: Int, x: Int, y: Int) {
+    override fun sendTouch(action: Int, x: Int, y: Int) {
         if (!running.get()) return
         val type = when (action) {
             0 -> CarPlusProtocol.TOUCH_DOWN
@@ -173,7 +178,7 @@ class CarPlusVideoReceiver(
     }
 
     /** Composite CarLife action carrying an Android pointer id in the high byte. */
-    fun sendTouchComposite(actionCode: Int, x: Int, y: Int) {
+    override fun sendTouchComposite(actionCode: Int, x: Int, y: Int) {
         if (!running.get()) return
         enqueueTouch(TouchEvent(CarPlusProtocol.TOUCH_ACTION, actionCode, x, y))
     }
@@ -208,12 +213,22 @@ class CarPlusVideoReceiver(
         closeSession()
         sessionDown.set(false)
         versionMatched = false
+        authResultReceived = false
         featureConfigAcked = false
         starterScheduled = false
         readyFired = false
         videoDead = false
-        log("[CAR+] probing phone-side CarLife loopback ports…")
-        MiniState.setCar("正在寻找手机车联 CarLife 服务", Stage.WAIT)
+        if (!loopbackMissLogged) {
+            log("[CAR+] probing phone-side CarLife loopback ports…")
+        }
+        MiniState.setCar(
+            if (CarPlusLauncher.canUseHonorLocalPresentation(context)) {
+                "荣耀车联 · 等待点击“开始连接”"
+            } else {
+                "正在寻找手机车联 CarLife 服务"
+            },
+            Stage.WAIT,
+        )
 
         for (port in CarPlusProtocol.PORTS) {
             try {
@@ -221,7 +236,10 @@ class CarPlusVideoReceiver(
                 sockets[port] = socket
             } catch (error: Exception) {
                 if (port == CarPlusProtocol.PORT_CMD) {
-                    log("[CAR+] CarLife :$port not ready (${error.javaClass.simpleName})")
+                    if (!loopbackMissLogged) {
+                        loopbackMissLogged = true
+                        log("[CAR+] CarLife :$port not ready (${error.javaClass.simpleName})")
+                    }
                 }
             }
         }
@@ -229,8 +247,9 @@ class CarPlusVideoReceiver(
         val cmd = sockets[CarPlusProtocol.PORT_CMD] ?: return false
         cmdOut = cmd.getOutputStream()
         touchOut = sockets[CarPlusProtocol.PORT_TOUCH]?.getOutputStream()
+        loopbackMissLogged = false
         log("[CAR+] connected to phone-side CarLife engine")
-        MiniState.setCar("CarLife 已连接，正在握手", Stage.WAIT)
+        MiniState.setCar("荣耀车联已连接，正在等待桌面", Stage.WAIT)
 
         thread(name = "carplus-cmd", isDaemon = true) {
             readCommands(cmd.getInputStream())
@@ -310,11 +329,24 @@ class CarPlusVideoReceiver(
                 )
                 scheduleFeatureAndEncoder()
             }
+            CarPlusProtocol.MD_AUTHEN_RESPONSE -> {
+                log("[CAR+] HU authentication challenge answered (${payload.size} bytes)")
+                send(CarPlusProtocol.HU_AUTHEN_RESULT, CarPlusProtocol.authenResult(true))
+            }
+            CarPlusProtocol.MD_AUTHEN_RESULT -> {
+                authResultReceived = true
+                log("[CAR+] HU authentication accepted (${payload.size} bytes)")
+                send(CarPlusProtocol.HU_AUTHEN_ACK, ByteArray(0))
+            }
             CarPlusProtocol.MD_MODULE_STATUS -> {
                 val modules = CarPlusProtocol.parseModuleStatus(payload)
                 if (modules.isNotEmpty() && modules.any { it.second == 0 }) {
                     send(CarPlusProtocol.HU_MODULE_CONTROL, CarPlusProtocol.moduleControl(modules.map { it.first }))
                 }
+            }
+            CarPlusProtocol.MD_FEATURE_CONFIG -> {
+                log("[CAR+] CarLife host requested feature configuration")
+                send(CarPlusProtocol.HU_FEATURE_CONFIG, CarPlusProtocol.featureConfig())
             }
             CarPlusProtocol.MD_FEATURE_CONFIG_DONE -> {
                 featureConfigAcked = true
@@ -330,7 +362,10 @@ class CarPlusVideoReceiver(
             }
             CarPlusProtocol.VIDEO_ENC_DONE -> sendEncoderInit()
             in CarPlusProtocol.MD_IGNORED_IDS -> Unit
-            else -> Unit
+            else -> log(
+                "[CAR+] command 0x${type.toString(16)} (${payload.size} bytes) " +
+                    if (authResultReceived) "" else "[handshake]",
+            )
         }
     }
 

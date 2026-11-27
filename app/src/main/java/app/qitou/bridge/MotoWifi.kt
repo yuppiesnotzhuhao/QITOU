@@ -121,12 +121,9 @@ object MotoWifi {
                 if (!shouldMaintain || desired?.ssid != vehicle.ssid) return
                 connecting = false
                 network = null
-                MiniState.setWifi("未连接车机 Wi-Fi", Stage.ERROR)
+                MiniState.setWifi("未检测到 ${vehicle.ssid}", Stage.ERROR)
                 MiniState.log("[WIFI] ${vehicle.ssid} unavailable")
-                failAndStop(
-                    "未检测到 ${vehicle.ssid}。请保持仪表 MotoPlay 页面打开，" +
-                        "确认手机 Wi-Fi 列表能看到该热点后，再点击连接。",
-                )
+                failAndStop("车机 Wi-Fi 未连接")
             }
 
             override fun onLost(net: Network) {
@@ -156,7 +153,7 @@ object MotoWifi {
     private fun scheduleReconnect(context: Context, reason: String) {
         if (!shouldMaintain) return
         if (reconnectAttempts >= 1) {
-            failAndStop("车机 Wi-Fi 已断开，请确认 MotoPlay 热点可见后重新连接。")
+            failAndStop("车机 Wi-Fi 已断开")
             return
         }
         if (reconnectScheduled) return

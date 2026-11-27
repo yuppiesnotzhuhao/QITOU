@@ -1,9 +1,10 @@
 package app.qitou.bridge
 
 import android.graphics.Typeface
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.text.method.LinkMovementMethod
 import android.view.Gravity
 import android.view.WindowInsets
 import android.widget.Button
@@ -51,21 +52,23 @@ class AboutActivity : ComponentActivity() {
             title = "项目与作者",
             lines = listOf(
                 "作者：yuppiesnotzhuhao",
-                "GitHub 项目主页：https://github.com/yuppiesnotzhuhao/QITOU",
-                "问题反馈与功能建议：https://github.com/yuppiesnotzhuhao/QITOU/issues",
+                "项目源码、更新记录和功能建议均在 GitHub 维护。",
                 "欢迎提交 Issue 或 Pull Request。",
             ),
-            links = true,
         ))
+        root.addView(actionButton("打开 GitHub 项目") {
+            openUrl("https://github.com/yuppiesnotzhuhao/QITOU")
+        })
+        root.addView(actionButton("提交问题或功能建议") {
+            openUrl("https://github.com/yuppiesnotzhuhao/QITOU/issues")
+        })
 
         root.addView(sectionCard(
             title = "手机车联兼容性",
             lines = listOf(
-                "兼容支持本地 CarLife 输出的手机车联应用，例如 OPPO Car+、" +
-                    "荣耀车联和 CarLife+ 增强版。",
+                "兼容支持本地CarLife输出的手机车联应用，例如OPPO Car+、荣耀车联等。",
                 "应用不内置车联服务；实际可用能力取决于手机厂商、系统版本和已安装应用。",
             ),
-            links = false,
         ))
 
         root.addView(sectionCard(
@@ -76,7 +79,6 @@ class AboutActivity : ComponentActivity() {
                 "你可以按照该许可证使用、研究、修改和再分发本应用。分发修改版时，" +
                     "必须保留版权与许可声明，并按 AGPL 要求提供 Corresponding Source。",
             ),
-            links = false,
         ))
         root.addView(actionButton("查看完整 AGPL-3.0 协议") {
             showAsset("GNU AGPL-3.0-only", "licenses/AGPL-3.0.txt")
@@ -91,11 +93,15 @@ class AboutActivity : ComponentActivity() {
                 "感谢 CarWithin 项目及其作者 xmz28。",
                 "CarWithin 的 iOS + CarPlay/CarLife 互联方案为${Brand.CHINESE_NAME}" +
                     "的产品设计和协议研究提供了启发。",
-                "CarWithin 项目地址：https://github.com/xmz28/CarWithin",
-                "作者主页：https://github.com/xmz28",
+                "相关源码和作者主页可通过下方入口查看。",
             ),
-            links = true,
         ))
+        root.addView(actionButton("打开 CarWithin 项目") {
+            openUrl("https://github.com/xmz28/CarWithin")
+        })
+        root.addView(actionButton("打开作者 xmz28 的主页") {
+            openUrl("https://github.com/xmz28")
+        })
 
         root.addView(sectionCard(
             title = "其他来源",
@@ -105,7 +111,6 @@ class AboutActivity : ComponentActivity() {
                 "AndroidX：Apache-2.0",
                 "Google ML Kit Barcode Scanning：Google APIs Terms of Service",
             ),
-            links = true,
         ))
 
         root.addView(Button(this).apply {
@@ -158,7 +163,6 @@ class AboutActivity : ComponentActivity() {
     private fun sectionCard(
         title: String,
         lines: List<String>,
-        links: Boolean,
     ): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(16), dp(14), dp(16), dp(14))
@@ -176,11 +180,6 @@ class AboutActivity : ComponentActivity() {
                 setTextColor(color(R.color.text_body))
                 textSize = 13f
                 setLineSpacing(dp(2).toFloat(), 1.12f)
-                if (links) {
-                    autoLinkMask = android.text.util.Linkify.WEB_URLS
-                    movementMethod = LinkMovementMethod.getInstance()
-                    linksClickable = true
-                }
             }, top(if (index == 0) 8 else 7))
         }
     }.also {
@@ -208,6 +207,14 @@ class AboutActivity : ComponentActivity() {
             .setView(scroll)
             .setPositiveButton("关闭", null)
             .show()
+    }
+
+    private fun openUrl(url: String) {
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }.onFailure {
+            Toast.makeText(this, "无法打开浏览器", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun title(text: String): TextView = TextView(this).apply {

@@ -78,16 +78,33 @@ class ControlActivity : Activity() {
             text = "退出全屏"
             textSize = 13f
             isAllCaps = false
+            stateListAnimator = null
+            elevation = 0f
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(14), 0, dp(14), 0)
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.argb(180, 18, 24, 32))
+            setBackground(
+                CarAppTheme.rounded(
+                    Color.argb(180, 18, 24, 32),
+                    dp(14),
+                    Color.argb(55, 255, 255, 255),
+                ),
+            )
             setOnClickListener { finish() }
         }
         fps = TextView(this).apply {
             setTextColor(Color.rgb(126, 230, 181))
             textSize = 13f
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Color.argb(150, 10, 14, 20))
             setPadding(18, 8, 18, 8)
+            setBackground(
+                CarAppTheme.rounded(
+                    Color.argb(160, 10, 14, 20),
+                    dp(14),
+                    Color.argb(45, 255, 255, 255),
+                ),
+            )
         }
 
         val root = FrameLayout(this).apply {
@@ -95,14 +112,14 @@ class ControlActivity : Activity() {
             addView(preview, FrameLayout.LayoutParams(-1, -1))
             addView(
                 exit,
-                FrameLayout.LayoutParams(dp(96), dp(42), Gravity.TOP or Gravity.START).apply {
+                FrameLayout.LayoutParams(-2, dp(40), Gravity.TOP or Gravity.START).apply {
                     leftMargin = dp(14)
                     topMargin = dp(14)
                 },
             )
             addView(
                 fps,
-                FrameLayout.LayoutParams(dp(180), dp(42), Gravity.TOP or Gravity.END).apply {
+                FrameLayout.LayoutParams(-2, dp(40), Gravity.TOP or Gravity.END).apply {
                     rightMargin = dp(14)
                     topMargin = dp(14)
                 },
@@ -237,7 +254,7 @@ class ControlActivity : Activity() {
 
     private fun mapPoint(x: Float, y: Float, w: Int, h: Int): Pair<Int, Int>? {
         if (w <= 0 || h <= 0) return null
-        val sourceAspect = 1280f / 480f
+        val sourceAspect = MiniState.sourceWidth.toFloat() / MiniState.sourceHeight
         val viewAspect = w.toFloat() / h
         val drawW: Float
         val drawH: Float
@@ -251,8 +268,10 @@ class ControlActivity : Activity() {
         val left = (w - drawW) / 2f
         val top = (h - drawH) / 2f
         if (x < left || x >= left + drawW || y < top || y >= top + drawH) return null
-        return (((x - left) * 1280 / drawW).toInt().coerceIn(0, 1279)) to
-            (((y - top) * 480 / drawH).toInt().coerceIn(0, 479))
+        return (((x - left) * MiniState.sourceWidth / drawW).toInt()
+            .coerceIn(0, MiniState.sourceWidth - 1)) to
+            (((y - top) * MiniState.sourceHeight / drawH).toInt()
+                .coerceIn(0, MiniState.sourceHeight - 1))
     }
 
     private fun renderFps() {

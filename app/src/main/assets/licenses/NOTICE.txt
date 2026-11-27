@@ -87,7 +87,6 @@ Third-party dependencies (fetched at build time, not vendored)
   * Material Components for Android ....................... Apache License 2.0
   * osmdroid (trip history map) ......................... Apache License 2.0
   * MapLibre Native Android (Map / GPX dash) ............ BSD-2-Clause
-  * jmDNS (mDNS/NSD) ..................................... Apache License 2.0
   * Conscrypt (TLS provider) ............................. Apache License 2.0
   * Google ML Kit — Barcode Scanning .................... Google APIs Terms of Service
   * Protocol Buffers (protobuf-java) .................... BSD-3-Clause
