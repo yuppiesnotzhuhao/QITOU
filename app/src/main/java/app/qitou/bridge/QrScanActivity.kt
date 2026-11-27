@@ -3,8 +3,10 @@ package app.qitou.bridge
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
+import android.view.WindowInsets
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
@@ -57,20 +59,48 @@ class QrScanActivity : ComponentActivity() {
             setBackgroundColor(Color.argb(190, 0, 0, 0))
             setPadding(24, 28, 24, 28)
         }
-        setContentView(FrameLayout(this).apply {
+        lateinit var backButton: Button
+        val root = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             addView(previewView, FrameLayout.LayoutParams(-1, -1))
-            addView(Button(this@QrScanActivity).apply {
+            backButton = Button(this@QrScanActivity).apply {
                 text = "返回"
                 isAllCaps = false
+                stateListAnimator = null
+                elevation = 0f
                 setTextColor(Color.WHITE)
                 setBackgroundColor(Color.argb(175, 12, 18, 26))
                 setOnClickListener { finish() }
-            }, FrameLayout.LayoutParams(180, 105, Gravity.TOP or Gravity.START).apply {
+            }
+            addView(backButton, FrameLayout.LayoutParams(180, 105, Gravity.TOP or Gravity.START).apply {
                 topMargin = (48 * resources.displayMetrics.density).toInt()
             })
             addView(status, FrameLayout.LayoutParams(-1, 160, Gravity.BOTTOM))
-        })
+        }
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            val topInset: Int
+            val bottomInset: Int
+            if (Build.VERSION.SDK_INT >= 30) {
+                val safe = insets.getInsets(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout(),
+                )
+                topInset = safe.top
+                bottomInset = safe.bottom
+            } else {
+                @Suppress("DEPRECATION")
+                topInset = insets.systemWindowInsetTop
+                @Suppress("DEPRECATION")
+                bottomInset = insets.systemWindowInsetBottom
+            }
+            backButton.layoutParams = (backButton.layoutParams as FrameLayout.LayoutParams).apply {
+                topMargin = topInset + (12 * resources.displayMetrics.density).toInt()
+            }
+            status.layoutParams = (status.layoutParams as FrameLayout.LayoutParams).apply {
+                bottomMargin = bottomInset
+            }
+            insets
+        }
+        setContentView(root)
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             startCamera()
         } else {

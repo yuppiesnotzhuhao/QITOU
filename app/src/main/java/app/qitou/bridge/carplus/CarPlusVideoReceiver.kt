@@ -34,6 +34,7 @@ class CarPlusVideoReceiver(
     private val requestedWidth: Int = 1280,
     private val requestedHeight: Int = 720,
     private val requestedFps: Int = 30,
+    private val onFps: (Int) -> Unit = {},
     private val onVideoSize: (width: Int, height: Int) -> Unit = { _, _ -> },
     private val onReady: () -> Unit = {},
     private val onSessionEnded: () -> Unit = {},
@@ -68,6 +69,7 @@ class CarPlusVideoReceiver(
     @Volatile private var lastTouchProbeAt = 0L
     @Volatile private var touchMissLogged = false
     @Volatile private var startupWarned = false
+    @Volatile private var lastFpsLogAt = 0L
 
     private val decoder = VideoDecoder().apply {
         fallbackWidth = requestedWidth
@@ -80,7 +82,14 @@ class CarPlusVideoReceiver(
             }
         }
         onFpsChanged = { fps ->
-            if (fps > 0) log("[CAR+] decode fps=$fps")
+            onFps(fps)
+            if (fps > 0) {
+                val now = SystemClock.elapsedRealtime()
+                if (lastFpsLogAt == 0L || now - lastFpsLogAt >= 10_000L) {
+                    lastFpsLogAt = now
+                    log("[CAR+] decode fps=$fps")
+                }
+            }
             if (fps >= 5 && !readyFired) {
                 readyFired = true
                 log("[CAR+] steady video reached (fps=$fps) — starting bike hand-off")

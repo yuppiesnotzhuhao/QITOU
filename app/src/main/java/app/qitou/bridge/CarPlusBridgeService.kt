@@ -9,6 +9,7 @@ import android.content.Intent
 import android.graphics.drawable.Icon
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -22,6 +23,7 @@ class CarPlusBridgeService : Service() {
     private var audioPlayer: MotoAudioPlayer? = null
     private var bluetoothKeeper: BluetoothA2dpKeeper? = null
     private var videoLive = false
+    private var liveUpdateLogged = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private val main = Handler(Looper.getMainLooper())
@@ -45,7 +47,10 @@ class CarPlusBridgeService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIFICATION_ID, notification("${Brand.CHINESE_NAME}正在等待画面"))
+        startForeground(
+            NOTIFICATION_ID,
+            notification("正在等待车机和 Car+ 画面", "连接中"),
+        )
         MiniState.serviceActive = true
         acquireLocks()
         connectVehicle()
@@ -100,17 +105,14 @@ class CarPlusBridgeService : Service() {
             surface = input,
             log = {
                 MiniState.log(it)
-                if (it.contains("decode fps=")) {
-                    val fps = it.substringAfter("decode fps=").takeWhile(Char::isDigit).toIntOrNull()
-                    if (fps != null) {
-                        MiniState.update(fps = fps)
-                        if (fps > 0) MiniState.setCar("Car+ 正在解码 · $fps fps", Stage.OK)
-                    }
-                }
             },
             requestedWidth = 1280,
             requestedHeight = 480,
             requestedFps = 30,
+            onFps = { fps ->
+                MiniState.update(fps = fps)
+                if (fps > 0) MiniState.setCar("Car+ 正在解码 · $fps fps", Stage.OK)
+            },
             onVideoSize = { w, h ->
                 MiniState.log("[MINI] Car+ stream ${w}x$h")
             },
@@ -124,14 +126,14 @@ class CarPlusBridgeService : Service() {
                     }
                     MiniState.update("Car+ 画面已接收 · 正在连接 MotoPlay")
                     MiniState.setCar("Car+ 画面已接收 · 800×384", Stage.OK)
-                    updateNotification("Car+ 画面已接收 · 正在投送")
+                    updateNotification("Car+ 已连接 · MotoPlay 投送中", "投送中")
                 }
             },
             onSessionEnded = {
                 videoLive = false
                 MiniState.update("Car+ 画面中断，正在重连")
                 MiniState.setCar("Car+ 画面中断，自动重连", Stage.ERROR)
-                updateNotification("Car+ 画面中断，正在重连")
+                updateNotification("Car+ 画面中断，正在重连", "重连中")
             },
             onAudioPacket = { isTts, pcm, rate, channels ->
                 audioPlayer?.write(isTts, pcm, rate, channels)
@@ -195,19 +197,22 @@ class CarPlusBridgeService : Service() {
         )
     }
 
-    private fun updateNotification(text: String) {
-        getSystemService(NotificationManager::class.java).notify(
-            NOTIFICATION_ID,
-            notification(text),
-        )
+    private fun updateNotification(text: String, chipText: String) {
+        val manager = getSystemService(NotificationManager::class.java)
+        val built = notification(text, chipText)
+        manager.notify(NOTIFICATION_ID, built)
+        logLiveUpdateEligibility(manager, built)
     }
 
-    private fun notification(text: String): Notification =
-        Notification.Builder(this, CHANNEL)
+    private fun notification(text: String, chipText: String): Notification {
+        val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(Brand.CHINESE_NAME)
             .setContentText(text)
+            .setSubText("OPPO Car+ · CFMOTO")
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setContentIntent(
                 PendingIntent.getActivity(
                     this,
@@ -229,7 +234,26 @@ class CarPlusBridgeService : Service() {
                     ),
                 ).build(),
             )
-            .build()
+
+        if (Build.VERSION.SDK_INT >= 36) {
+            builder.addExtras(
+                Bundle().apply {
+                    putBoolean(EXTRA_REQUEST_PROMOTED_ONGOING, true)
+                    putString(EXTRA_SHORT_CRITICAL_TEXT, chipText)
+                },
+            )
+        }
+        return builder.build()
+    }
+
+    private fun logLiveUpdateEligibility(manager: NotificationManager, notification: Notification) {
+        if (Build.VERSION.SDK_INT < 36 || liveUpdateLogged) return
+        liveUpdateLogged = true
+        MiniState.log(
+            "[LIVE] promotable=${notification.hasPromotableCharacteristics()} " +
+                "userEnabled=${manager.canPostPromotedNotifications()}",
+        )
+    }
 
     private fun acquireLocks() {
         acquireWakeLock()
@@ -283,6 +307,8 @@ class CarPlusBridgeService : Service() {
         private const val NOTIFICATION_ID = 41
         private const val WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L
         private const val WAKE_LOCK_RENEW_MS = 8 * 60 * 1000L
+        private const val EXTRA_REQUEST_PROMOTED_ONGOING = "android.requestPromotedOngoing"
+        private const val EXTRA_SHORT_CRITICAL_TEXT = "android.shortCriticalText"
 
         fun start(context: android.content.Context) {
             val intent = Intent(context, CarPlusBridgeService::class.java).setAction(ACTION_START)

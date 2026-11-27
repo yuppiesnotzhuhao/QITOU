@@ -24,7 +24,7 @@ class AboutActivity : ComponentActivity() {
         val background = CarAppTheme.canvas(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(22), dp(20), dp(30))
+            setPadding(dp(20), dp(16), dp(20), dp(26))
             setBackground(background)
         }
 
@@ -102,6 +102,8 @@ class AboutActivity : ComponentActivity() {
             text = "返回"
             isAllCaps = false
             textSize = 15f
+            stateListAnimator = null
+            elevation = 0f
             setTextColor(color(R.color.button_secondary_text))
             setBackground(rounded(color(R.color.button_secondary_surface), 14))
             setOnClickListener { finish() }
@@ -109,19 +111,23 @@ class AboutActivity : ComponentActivity() {
 
         val scroll = ScrollView(this).apply {
             setBackground(background)
+            clipToPadding = true
+            setPadding(0, dp(8), 0, dp(8))
             addView(root)
         }
         scroll.setOnApplyWindowInsetsListener { _, insets ->
             if (Build.VERSION.SDK_INT >= 30) {
-                val bars = insets.getInsets(WindowInsets.Type.systemBars())
-                root.setPadding(dp(20), bars.top + dp(16), dp(20), bars.bottom + dp(26))
+                val safe = insets.getInsets(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout(),
+                )
+                scroll.setPadding(0, safe.top + dp(8), 0, safe.bottom + dp(8))
             } else {
                 @Suppress("DEPRECATION")
-                root.setPadding(
-                    dp(20),
-                    insets.systemWindowInsetTop + dp(16),
-                    dp(20),
-                    insets.systemWindowInsetBottom + dp(26),
+                scroll.setPadding(
+                    0,
+                    insets.systemWindowInsetTop + dp(8),
+                    0,
+                    insets.systemWindowInsetBottom + dp(8),
                 )
             }
             insets
@@ -219,6 +225,8 @@ class AboutActivity : ComponentActivity() {
             this.text = text
             isAllCaps = false
             textSize = 14f
+            stateListAnimator = null
+            elevation = 0f
             setTextColor(color(R.color.button_secondary_text))
             setBackground(
                 rounded(
