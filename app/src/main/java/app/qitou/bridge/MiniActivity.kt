@@ -582,8 +582,8 @@ class MiniActivity : ComponentActivity() {
 
         advancedBody.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(secondaryButton("息屏保活") {
-                SystemLinks.openBatterySettings(this@MiniActivity)
+            addView(secondaryButton("后台运行设置") {
+                showBackgroundRunSettings()
             }, weighted())
             addView(secondaryButton("导出诊断包") { shareLogs() }, weighted(left = 10))
         }, linearParams(height = 48, bottom = 4))
@@ -877,6 +877,164 @@ class MiniActivity : ComponentActivity() {
                 }
             }
             .show()
+    }
+
+    private fun showBackgroundRunSettings() {
+        val ignoringOptimization = SystemLinks.isIgnoringBatteryOptimizations(this)
+        val padding = dp(20)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, dp(2), padding, dp(4))
+        }
+        content.addView(TextView(this).apply {
+            text = "建议先允许系统电池优化。只有随后仍出现息屏断连或画面停更时，" +
+                "再检查 ColorOS 后台行为。"
+            setTextColor(color(R.color.dialog_message))
+            textSize = 14f
+            setLineSpacing(0f, 1.12f)
+        }, linearParams(bottom = 12))
+
+        fun stepCard(step: String, title: String, status: String, statusColor: Int) =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(13), dp(14), dp(13))
+                setBackground(
+                    rounded(
+                        color(R.color.dialog_input_surface),
+                        14,
+                        stroke = color(R.color.dialog_input_stroke),
+                    ),
+                )
+                addView(LinearLayout(this@MiniActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(TextView(this@MiniActivity).apply {
+                        text = step
+                        gravity = Gravity.CENTER
+                        setTextColor(color(R.color.accent_on_primary))
+                        textSize = 13f
+                        typeface = Typeface.DEFAULT_BOLD
+                        setBackground(rounded(color(R.color.accent_primary), 13))
+                    }, LinearLayout.LayoutParams(dp(28), dp(28)).apply {
+                        rightMargin = dp(9)
+                    })
+                    addView(TextView(this@MiniActivity).apply {
+                        text = title
+                        setTextColor(color(R.color.dialog_title))
+                        textSize = 15f
+                        typeface = Typeface.DEFAULT_BOLD
+                    }, weighted())
+                    addView(TextView(this@MiniActivity).apply {
+                        text = status
+                        setTextColor(statusColor)
+                        textSize = 12f
+                        typeface = Typeface.DEFAULT_BOLD
+                    })
+                })
+            }
+
+        val batteryCard = stepCard(
+            "1",
+            "系统电池优化",
+            if (ignoringOptimization) "已允许" else "未允许",
+            if (ignoringOptimization) color(R.color.success) else color(R.color.warning),
+        )
+        batteryCard.addView(TextView(this).apply {
+            text = "防止 Android 在手机息屏后暂停骑投的后台网络。"
+            setTextColor(color(R.color.dialog_message))
+            textSize = 13f
+            setPadding(0, dp(8), 0, 0)
+            setLineSpacing(0f, 1.1f)
+        })
+        content.addView(batteryCard, linearParams(bottom = 10))
+
+        val colorOsCard = stepCard(
+            "2",
+            "ColorOS 后台行为",
+            "可选",
+            color(R.color.text_label),
+        )
+        colorOsCard.addView(TextView(this).apply {
+            text = "仅当第 1 项设置后仍然投送不稳定时，再打开应用详情，按以下顺序检查："
+            setTextColor(color(R.color.dialog_message))
+            textSize = 13f
+            setPadding(0, dp(8), 0, dp(7))
+        })
+        fun pathText(text: String, weightedStep: Boolean = false) = TextView(this).apply {
+            this.text = text
+            setTextColor(color(R.color.dialog_code_text))
+            textSize = 13f
+            isSingleLine = true
+            includeFontPadding = false
+            gravity = Gravity.CENTER_VERTICAL
+            if (weightedStep) {
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            }
+        }
+        colorOsCard.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            setBackground(
+                rounded(
+                    color(R.color.dialog_surface),
+                    10,
+                    stroke = color(R.color.dialog_input_stroke),
+                ),
+            )
+            addView(pathText("应用信息"))
+            addView(pathText("→").apply {
+                setTextColor(color(R.color.dialog_action))
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(dp(24), -2))
+            addView(pathText("耗电管理"))
+            addView(pathText("→").apply {
+                setTextColor(color(R.color.dialog_action))
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(dp(24), -2))
+            addView(pathText("完全允许后台行为", weightedStep = true), weighted())
+        })
+        colorOsCard.addView(TextView(this).apply {
+            text = "这一项不是强制设置；ColorOS 不开放状态读取，只能在需要时手动检查。"
+            setTextColor(color(R.color.dialog_hint))
+            textSize = 12f
+            setPadding(0, dp(7), 0, 0)
+        })
+        content.addView(colorOsCard, linearParams(bottom = 14))
+
+        val dialog = CarDialogs.builder(this)
+            .setTitle("设置后台运行")
+            .setView(content)
+            .create()
+        if (!ignoringOptimization) {
+            content.addView(
+                secondaryButton("允许系统电池优化") {
+                    dialog.dismiss()
+                    SystemLinks.requestIgnoreBatteryOptimizations(this)
+                },
+                linearParams(height = 46, bottom = 10),
+            )
+        }
+        content.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(secondaryButton("关闭") { dialog.dismiss() }, weighted())
+            addView(primaryButton("打开应用详情") {
+                dialog.dismiss()
+                SystemLinks.openApplicationDetails(this@MiniActivity)
+            }, weighted(left = 10))
+        }, linearParams(height = 50))
+        dialog.show()
+    }
+
+    private fun primaryButton(label: String, click: () -> Unit) = Button(this).apply {
+        text = label
+        textSize = 14f
+        isAllCaps = false
+        stateListAnimator = null
+        elevation = 0f
+        setTextColor(color(R.color.accent_on_primary))
+        setBackground(rounded(color(R.color.accent_primary), 13))
+        setOnClickListener { click() }
     }
 
     private fun launchBridge() {
