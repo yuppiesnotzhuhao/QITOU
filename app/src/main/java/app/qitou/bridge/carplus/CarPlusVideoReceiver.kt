@@ -24,7 +24,8 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.withLock
 
 /**
- * Connects to OPPO Car+'s local CarLife sender and feeds its H.264 stream into the
+ * Connects to an installed phone-side CarLife host's loopback sender and feeds its
+ * H.264 stream into the
  * same decoder-to-compositor path previously used by Android Auto.
  */
 class CarPlusVideoReceiver(
@@ -77,7 +78,7 @@ class CarPlusVideoReceiver(
         dimensionsListener = object : app.qitou.bridge.aa.VideoDimensionsListener {
             override fun onVideoDimensionsChanged(width: Int, height: Int) {
                 log("[CAR+] stream ${width}x$height")
-                MiniState.setCar("Car+ 画面 ${width}×$height", Stage.WAIT)
+                MiniState.setCar("CarLife 画面 ${width}×$height", Stage.WAIT)
                 onVideoSize(width, height)
             }
         }
@@ -93,7 +94,7 @@ class CarPlusVideoReceiver(
             if (fps >= 5 && !readyFired) {
                 readyFired = true
                 log("[CAR+] steady video reached (fps=$fps) — starting bike hand-off")
-                MiniState.setCar("Car+ 画面稳定 · $fps fps", Stage.OK)
+                MiniState.setCar("CarLife 画面稳定 · $fps fps", Stage.OK)
                 onReady()
             }
         }
@@ -104,7 +105,7 @@ class CarPlusVideoReceiver(
         AaLog.sink = log
         decoder.setSurface(surface)
         MiniState.update(fps = 0)
-        MiniState.setCar("正在等待 Car+ 画面", Stage.WAIT)
+        MiniState.setCar("正在等待 CarLife 画面", Stage.WAIT)
         MiniState.setAudio("等待 9240/9241 音频", Stage.WAIT)
         startTouchWorker()
         thread(name = "carplus-session", isDaemon = true) {
@@ -118,9 +119,9 @@ class CarPlusVideoReceiver(
                         SystemClock.elapsedRealtime() - startedAt > STARTUP_TIMEOUT_MS
                     ) {
                         startupWarned = true
-                        log("[CAR+] local CarLife ports did not appear — in Car+ choose CarLife/CarLife 无线连接")
+                        log("[CAR+] local CarLife ports did not appear — choose a CarLife wireless host in the phone-side app")
                         MiniState.setCar(
-                            "未找到 Car+ CarLife，请在 Car+ 中选择 CarLife 无线连接",
+                            "未找到手机车联 CarLife 服务，请在当前车联应用中选择 CarLife 无线连接",
                             Stage.ERROR,
                         )
                     }
@@ -130,7 +131,7 @@ class CarPlusVideoReceiver(
                     closeSession()
                     MiniState.update(fps = 0)
                     MiniState.setCar(
-                        if (running.get()) "Car+ 连接中断，正在重连" else "已停止",
+                        if (running.get()) "CarLife 连接中断，正在重连" else "已停止",
                         if (running.get()) Stage.ERROR else Stage.OFF,
                     )
                 }
@@ -195,8 +196,8 @@ class CarPlusVideoReceiver(
         starterScheduled = false
         readyFired = false
         videoDead = false
-        log("[CAR+] probing OPPO Car+ loopback ports…")
-        MiniState.setCar("正在寻找 Car+ CarLife 服务", Stage.WAIT)
+        log("[CAR+] probing phone-side CarLife loopback ports…")
+        MiniState.setCar("正在寻找手机车联 CarLife 服务", Stage.WAIT)
 
         for (port in CarPlusProtocol.PORTS) {
             try {
@@ -212,8 +213,8 @@ class CarPlusVideoReceiver(
         val cmd = sockets[CarPlusProtocol.PORT_CMD] ?: return false
         cmdOut = cmd.getOutputStream()
         touchOut = sockets[CarPlusProtocol.PORT_TOUCH]?.getOutputStream()
-        log("[CAR+] connected to OPPO Car+ CarLife engine")
-        MiniState.setCar("Car+ CarLife 已连接，正在握手", Stage.WAIT)
+        log("[CAR+] connected to phone-side CarLife engine")
+        MiniState.setCar("CarLife 已连接，正在握手", Stage.WAIT)
 
         thread(name = "carplus-cmd", isDaemon = true) {
             readCommands(cmd.getInputStream())
@@ -247,7 +248,7 @@ class CarPlusVideoReceiver(
             return false
         }
         log("[CAR+] CarLife protocol 3.0 matched")
-        MiniState.setCar("Car+ 协议已匹配", Stage.WAIT)
+        MiniState.setCar("CarLife 协议已匹配", Stage.WAIT)
         return true
     }
 
@@ -301,7 +302,7 @@ class CarPlusVideoReceiver(
             }
             CarPlusProtocol.MD_FEATURE_CONFIG_DONE -> {
                 featureConfigAcked = true
-                log("[CAR+] Car+ accepted feature configuration")
+                log("[CAR+] CarLife host accepted feature configuration")
             }
             CarPlusProtocol.MD_VIDEO_ENC_INIT -> {
                 val fields = CarPlusProtocol.readVarints(payload)
@@ -484,7 +485,7 @@ class CarPlusVideoReceiver(
         }
     }
 
-    /** Car+ may expose 9340 only after its encoder/session becomes ready. */
+    /** Some CarLife hosts expose 9340 only after their encoder/session becomes ready. */
     private fun touchWatchdog() {
         while (running.get() && !sessionDown.get()) {
             if (touchOut == null) {
@@ -525,7 +526,7 @@ class CarPlusVideoReceiver(
         if (out == null) {
             if (!touchMissLogged) {
                 touchMissLogged = true
-                log("[CAR+] touch channel not open yet — waiting for Car+ :9340")
+                log("[CAR+] touch channel not open yet — waiting for CarLife :9340")
             }
             return
         }

@@ -2,6 +2,7 @@ package app.qitou.bridge
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
 import android.graphics.Typeface
@@ -116,6 +117,13 @@ class MiniActivity : ComponentActivity() {
         val vehicle = MotoVehiclePrefs.load(this)
         if (vehicle != null) MiniState.setVehicle(vehicle.displayName)
         render()
+        if (
+            (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 &&
+            intent?.getBooleanExtra(CarPlusBridgeService.EXTRA_SOURCE_ONLY, false) == true
+        ) {
+            CarPlusBridgeService.start(this, sourceOnly = true)
+            CarPlusLauncher.launch(this, MiniState::log)
+        }
         window.decorView.post(::runInitialLaunchAutomation)
     }
 
@@ -185,7 +193,7 @@ class MiniActivity : ComponentActivity() {
             setPadding(0, dp(18), 0, 0)
         })
         root.addView(TextView(this).apply {
-            text = "画面直接显示在应用内，触摸这里即可控制 Car+。"
+            text = "画面直接显示在应用内，触摸这里即可控制手机车联。"
             setTextColor(color(R.color.text_body))
             textSize = 13f
             setPadding(0, dp(4), 0, dp(10))
@@ -300,7 +308,7 @@ class MiniActivity : ComponentActivity() {
             rowVehicle = it.first
             rowWifi = it.second
         }
-        addStatusPair(statusCard, "Car+ 画面", "未启动", "MotoPlay", "未启动").let {
+        addStatusPair(statusCard, "车联画面", "未启动", "MotoPlay", "未启动").let {
             rowCar = it.first
             rowPxc = it.second
         }
@@ -541,7 +549,7 @@ class MiniActivity : ComponentActivity() {
             typeface = Typeface.DEFAULT_BOLD
         })
         advancedText.addView(TextView(this).apply {
-            text = "重新配对、Car+ 恢复、日志与系统设置"
+            text = "重新配对、车联恢复、日志与系统设置"
             setTextColor(color(R.color.text_body))
             textSize = 12f
             setPadding(0, dp(3), 0, 0)
@@ -576,12 +584,12 @@ class MiniActivity : ComponentActivity() {
             }, weighted(left = 10))
         }, linearParams(height = 48, bottom = 8))
 
-        carPlusButton = secondaryButton("重新连接 Car+") {
+        carPlusButton = secondaryButton("重新打开手机车联") {
             CarPlusLauncher.launch(this@MiniActivity, MiniState::log)
         }
         advancedBody.addView(carPlusButton, linearParams(height = 48, bottom = 3))
         advancedBody.addView(TextView(this).apply {
-            text = "仅在投送过程中 OPPO Car+ 被关闭时使用"
+            text = "仅在投送过程中车联应用被关闭时使用"
             setTextColor(color(R.color.text_body))
             textSize = 11f
             setPadding(dp(4), 0, 0, 0)
@@ -604,9 +612,9 @@ class MiniActivity : ComponentActivity() {
         root.addView(TextView(this).apply {
             text = "使用步骤\n" +
                 "1. 首次点“扫码连接车机”；以后点“连接已保存车辆”或开启启动自动连接\n" +
-                "2. 在 OPPO Car+ 中选择 CarLife 无线连接\n" +
+                "2. 在手机车联应用中选择 CarLife 无线连接\n" +
                 "3. 保持仪表在手机互联页面；断线后会自动重连\n" +
-                "4. 在“手机控制画面”或“全屏控制”中操作 Car+"
+                "4. 在“手机控制画面”或“全屏控制”中操作车联画面"
             setTextColor(color(R.color.text_body))
             textSize = 14f
             setLineSpacing(0f, 1.15f)
@@ -1276,7 +1284,7 @@ class MiniActivity : ComponentActivity() {
         fps.text = if (MiniState.framesPerSecond > 0) {
             "${MiniState.framesPerSecond} fps · 1280×480 控制源 · 800×384 车机输出"
         } else {
-            "等待 Car+ 画面"
+            "等待手机车联画面"
         }
         fps.setTextColor(
             if (MiniState.serviceActive) color(R.color.success) else color(R.color.text_muted),

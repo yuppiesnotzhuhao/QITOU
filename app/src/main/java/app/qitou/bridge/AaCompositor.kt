@@ -133,7 +133,7 @@ class AaCompositor(private val log: (String) -> Unit) {
                 initEgl()
                 initGl()
                 val mirrorBuf = bufferW > 0 && bufferH > 0
-                require(bufferW > 0 && bufferH > 0) { "Car+ source dimensions are required" }
+                require(bufferW > 0 && bufferH > 0) { "Phone CarLink source dimensions are required" }
                 bufW = bufferW
                 bufH = bufferH
                 cropU = 1f

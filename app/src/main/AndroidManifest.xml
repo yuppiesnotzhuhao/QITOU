@@ -40,6 +40,11 @@
 
     <queries>
         <package android:name="com.oplus.ocar" />
+        <package android:name="com.coloros.ocar" />
+        <package android:name="com.oppo.ocar" />
+        <package android:name="com.oplus.car" />
+        <package android:name="com.baidu.carlife.honor" />
+        <package android:name="com.hihonor.auto" />
     </queries>
 
     <application

@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.graphics.drawable.Icon
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -23,6 +24,7 @@ class CarPlusBridgeService : Service() {
     private var audioPlayer: MotoAudioPlayer? = null
     private var bluetoothKeeper: BluetoothA2dpKeeper? = null
     private var videoLive = false
+    private var sourceOnly = false
     private var liveUpdateLogged = false
     private var connectionFailure: String? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -52,11 +54,20 @@ class CarPlusBridgeService : Service() {
         connectionFailure = null
         startForeground(
             NOTIFICATION_ID,
-            notification("正在等待车机和 Car+ 画面", "连接中"),
+            notification("正在等待车机和手机车联画面", "连接中"),
         )
         MiniState.serviceActive = true
         acquireLocks()
-        connectVehicle()
+        sourceOnly =
+            (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 &&
+                intent?.getBooleanExtra(EXTRA_SOURCE_ONLY, false) == true
+        if (sourceOnly) {
+            MiniState.setVehicle("输入诊断")
+            MiniState.setWifi("手机车联输入诊断", Stage.OK)
+            startBridge()
+        } else {
+            connectVehicle()
+        }
         return START_STICKY
     }
 
@@ -90,7 +101,7 @@ class CarPlusBridgeService : Service() {
         if (MiniState.running) return
         MiniState.running = true
         MiniState.serviceActive = true
-        MiniState.update("正在启动 Car+ 接收")
+        MiniState.update("正在启动手机车联接收")
         val pipe = MiniVideoPipeline(MiniState::log)
         pipe.start()
         pipeline = pipe
@@ -116,29 +127,35 @@ class CarPlusBridgeService : Service() {
             requestedFps = 30,
             onFps = { fps ->
                 MiniState.update(fps = fps)
-                if (fps > 0) MiniState.setCar("Car+ 正在解码 · $fps fps", Stage.OK)
+                if (fps > 0) MiniState.setCar("车联画面解码 · $fps fps", Stage.OK)
             },
             onVideoSize = { w, h ->
-                MiniState.log("[MINI] Car+ stream ${w}x$h")
+                MiniState.log("[MINI] CarLife stream ${w}x$h")
             },
             onReady = {
                 if (!videoLive) {
                     videoLive = true
                     pipeline?.configureBikeCanvas(800, 384)
-                    if (motoLink?.isRunning != true) {
+                    if (!sourceOnly && motoLink?.isRunning != true) {
                         runCatching { motoLink?.stop() }
                         motoLink = MotoLink(applicationContext, pipe, MiniState::log).also { it.start() }
                     }
-                    MiniState.update("Car+ 画面已接收 · 正在连接 MotoPlay")
-                    MiniState.setCar("Car+ 画面已接收 · 800×384", Stage.OK)
-                    updateNotification("Car+ 已连接 · MotoPlay 投送中", "投送中")
+                    if (sourceOnly) {
+                        MiniState.update("手机车联输入诊断 · 已接收画面")
+                        MiniState.setCar("车联输入诊断 · 800×384", Stage.OK)
+                        updateNotification("手机车联输入诊断 · 已接收画面", "诊断中")
+                    } else {
+                        MiniState.update("手机车联画面已接收 · 正在连接 MotoPlay")
+                        MiniState.setCar("车联画面已接收 · 800×384", Stage.OK)
+                        updateNotification("手机车联已连接 · MotoPlay 投送中", "投送中")
+                    }
                 }
             },
             onSessionEnded = {
                 videoLive = false
-                MiniState.update("Car+ 画面中断，正在重连")
-                MiniState.setCar("Car+ 画面中断，自动重连", Stage.ERROR)
-                updateNotification("Car+ 画面中断，正在重连", "重连中")
+                MiniState.update("手机车联画面中断，正在重连")
+                MiniState.setCar("车联画面中断，自动重连", Stage.ERROR)
+                updateNotification("手机车联画面中断，正在重连", "重连中")
             },
             onAudioPacket = { isTts, pcm, rate, channels ->
                 audioPlayer?.write(isTts, pcm, rate, channels)
@@ -221,7 +238,7 @@ class CarPlusBridgeService : Service() {
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(Brand.CHINESE_NAME)
             .setContentText(text)
-            .setSubText("OPPO Car+ · CFMOTO")
+            .setSubText("手机车联 · CFMOTO")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
@@ -315,6 +332,7 @@ class CarPlusBridgeService : Service() {
     companion object {
         const val ACTION_START = "app.qitou.bridge.START"
         const val ACTION_STOP = "app.qitou.bridge.STOP"
+        const val EXTRA_SOURCE_ONLY = "source_only"
         private const val CHANNEL = "qitou_bridge"
         private const val NOTIFICATION_ID = 41
         private const val WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L
@@ -322,8 +340,13 @@ class CarPlusBridgeService : Service() {
         private const val EXTRA_REQUEST_PROMOTED_ONGOING = "android.requestPromotedOngoing"
         private const val EXTRA_SHORT_CRITICAL_TEXT = "android.shortCriticalText"
 
-        fun start(context: android.content.Context) {
-            val intent = Intent(context, CarPlusBridgeService::class.java).setAction(ACTION_START)
+        fun start(
+            context: android.content.Context,
+            sourceOnly: Boolean = false,
+        ) {
+            val intent = Intent(context, CarPlusBridgeService::class.java)
+                .setAction(ACTION_START)
+                .putExtra(EXTRA_SOURCE_ONLY, sourceOnly)
             context.startForegroundService(intent)
         }
 

@@ -59,6 +59,16 @@ class AboutActivity : ComponentActivity() {
         ))
 
         root.addView(sectionCard(
+            title = "手机车联兼容性",
+            lines = listOf(
+                "兼容支持本地 CarLife 输出的手机车联应用，例如 OPPO Car+、" +
+                    "荣耀车联和 CarLife+ 增强版。",
+                "应用不内置车联服务；实际可用能力取决于手机厂商、系统版本和已安装应用。",
+            ),
+            links = false,
+        ))
+
+        root.addView(sectionCard(
             title = "开源许可",
             lines = listOf(
                 "${Brand.FULL_NAME} 以 GNU Affero General Public License v3.0 only " +

@@ -5,28 +5,94 @@ import android.content.Context
 import android.content.Intent
 import android.content.ComponentName
 import android.content.pm.PackageManager
+import android.os.Build
 
-/** Starts ColorOS Car+ and leaves the wireless CarLife choice to the system UI. */
+/**
+ * Starts an installed phone-side CarLife host and leaves the wireless connection
+ * choice to the system UI. OPPO Car+ and Honor CarConnect both expose a generic
+ * local CarLife sender that QITOU consumes through the same loopback receiver.
+ */
 object CarPlusLauncher {
-    private val packages = listOf(
-        "com.oplus.ocar",
-        "com.coloros.ocar",
-        "com.oppo.ocar",
-        "com.oplus.car",
+    private const val CARLIFE_PLUS_PACKAGE = "com.baidu.carlife.honor"
+    private const val CARLIFE_PLUS_ACTIVITY =
+        "com.baidu.carlife.CarlifeActivity"
+    private const val HONOR_PACKAGE = "com.hihonor.auto"
+    private const val HONOR_MANAGER =
+        "com.hihonor.auto.settings.ManagerActivity"
+    private const val HONOR_MANAGER_ACTION =
+        "com.hihonor.auto.action.CAR_LIFE_MANAGER_VIEW"
+
+    private data class Host(
+        val packageName: String,
+        val displayName: String,
+    )
+
+    private val hosts = listOf(
+        Host("com.oplus.ocar", "OPPO Car+"),
+        Host("com.coloros.ocar", "OPPO Car+"),
+        Host("com.oppo.ocar", "OPPO Car+"),
+        Host("com.oplus.car", "OPPO Car+"),
+        Host(CARLIFE_PLUS_PACKAGE, "CarLife+ 增强版"),
+        Host(HONOR_PACKAGE, "荣耀车联"),
     )
 
     fun launch(context: Context, log: (String) -> Unit): Boolean {
         var installedAny = false
-        for (pkg in packages) {
-            val installed = try {
-                context.packageManager.getPackageInfo(pkg, PackageManager.GET_ACTIVITIES)
-                true
-            } catch (_: Exception) {
-                false
-            }
+        for (host in orderedHosts()) {
+            val pkg = host.packageName
+            val installed = isInstalled(context, pkg)
             if (!installed) continue
             installedAny = true
-            log("[CAR+] installed host package: $pkg")
+            log("[CAR+] installed host package: ${host.displayName} ($pkg)")
+
+            if (pkg == CARLIFE_PLUS_PACKAGE) {
+                try {
+                    context.startActivity(
+                        Intent().apply {
+                            component = ComponentName(pkg, CARLIFE_PLUS_ACTIVITY)
+                            addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED,
+                            )
+                        },
+                    )
+                    log("[CAR+] launched CarLife+ enhanced host")
+                    return true
+                } catch (error: Exception) {
+                    log(
+                        "[CAR+] CarLife+ enhanced host rejected: " +
+                            error.javaClass.simpleName,
+                    )
+                }
+            }
+
+            if (pkg == HONOR_PACKAGE) {
+                val intents = listOf(
+                    Intent().apply {
+                        action = HONOR_MANAGER_ACTION
+                        component = ComponentName(pkg, HONOR_MANAGER)
+                    },
+                    Intent().apply {
+                        component = ComponentName(pkg, HONOR_MANAGER)
+                    },
+                )
+                for (intent in intents) {
+                    try {
+                        intent.addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED,
+                        )
+                        context.startActivity(intent)
+                        log("[CAR+] launched Honor CarConnect manager")
+                        return true
+                    } catch (error: Exception) {
+                        log(
+                            "[CAR+] Honor CarConnect manager rejected: " +
+                                error.javaClass.simpleName,
+                        )
+                    }
+                }
+            }
 
             if (pkg == "com.oplus.ocar") {
                 val known = listOf(
@@ -45,10 +111,10 @@ object CarPlusLauncher {
                                 )
                             },
                         )
-                        log("[CAR+] launched known Car+ pairing entry: $activity")
+                        log("[CAR+] launched known phone-link pairing entry: $activity")
                         return true
                     } catch (error: Exception) {
-                        log("[CAR+] known Car+ entry $activity rejected: ${error.javaClass.simpleName}")
+                        log("[CAR+] known phone-link entry $activity rejected: ${error.javaClass.simpleName}")
                     }
                 }
             }
@@ -86,7 +152,7 @@ object CarPlusLauncher {
                 val intent = context.packageManager.getLaunchIntentForPackage(pkg) ?: continue
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
                 context.startActivity(intent)
-                log("[CAR+] launched OPPO Car+ ($pkg)")
+                    log("[CAR+] launched phone-side CarLife host ($pkg)")
                 return true
             } catch (_: Exception) {
             }
@@ -99,7 +165,7 @@ object CarPlusLauncher {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
                     }
                     context.startActivity(intent)
-                    log("[CAR+] launched Car+ activity ${activity.name} (score=$score)")
+                    log("[CAR+] launched phone-link activity ${activity.name} (score=$score)")
                     return true
                 } catch (error: Exception) {
                     log("[CAR+] activity ${activity.name} failed: ${error.javaClass.simpleName}")
@@ -107,10 +173,35 @@ object CarPlusLauncher {
             }
         }
         if (installedAny) {
-            log("[CAR+] OPPO Car+ has no launcher entry; using its CarLife cast service directly")
+            log("[CAR+] phone-side CarLife host has no launcher entry; using its cast service directly")
         } else {
-            log("[CAR+] OPPO Car+ package not visible/installed")
+            log("[CAR+] no supported phone-side CarLife host is visible/installed")
         }
         return false
+    }
+
+    private fun isInstalled(context: Context, packageName: String): Boolean =
+        try {
+            context.packageManager.getPackageInfo(
+                packageName,
+                PackageManager.GET_ACTIVITIES,
+            )
+            true
+        } catch (_: Exception) {
+            false
+        }
+
+    private fun orderedHosts(): List<Host> {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val brand = Build.BRAND.lowercase()
+        val honorDevice = "honor" in manufacturer || "honor" in brand
+        if (!honorDevice) return hosts
+        return hosts.sortedBy {
+            when (it.packageName) {
+                CARLIFE_PLUS_PACKAGE -> 0
+                HONOR_PACKAGE -> 1
+                else -> 2
+            }
+        }
     }
 }
