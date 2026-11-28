@@ -14,7 +14,7 @@
     <color name="text_label">#9EADC0</color>
     <color name="text_muted">#8799AE</color>
 
-    <color name="accent_primary">#91DAFF</color>
+    <color name="accent_primary">#258BFF</color>
     <color name="accent_on_primary">#111923</color>
     <color name="action_stopped">#495C70</color>
     <color name="text_on_stopped">#FFFFFF</color>
@@ -33,8 +33,8 @@
     <color name="dialog_title">#F4F8FC</color>
     <color name="dialog_message">#B9C9DB</color>
     <color name="dialog_hint">#8799AE</color>
-    <color name="dialog_action">#91DAFF</color>
-    <color name="dialog_action_pressed">#C0EEFF</color>
+    <color name="dialog_action">#258BFF</color>
+    <color name="dialog_action_pressed">#0F6FDB</color>
     <color name="dialog_action_disabled">#617184</color>
     <color name="dialog_input_surface">#0F1620</color>
     <color name="dialog_input_text">#F4F8FC</color>

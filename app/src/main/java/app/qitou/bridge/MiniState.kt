@@ -42,6 +42,9 @@ object MiniState {
     @Volatile var running: Boolean = false
     @Volatile var serviceActive: Boolean = false
     @Volatile var localOnly: Boolean = false
+    @Volatile var localCarLife: Boolean = false
+    @Volatile var localScreenWidth: Int = 0
+    @Volatile var localScreenHeight: Int = 0
     @Volatile var status: String = "未启动"
     @Volatile var framesPerSecond: Int = 0
     @Volatile var sourceWidth: Int = 1280
@@ -107,6 +110,12 @@ object MiniState {
     fun setSourceSize(width: Int, height: Int) {
         if (width > 0) sourceWidth = width
         if (height > 0) sourceHeight = height
+        listener?.invoke()
+    }
+
+    fun setLocalScreenSize(width: Int, height: Int) {
+        if (width > 0) localScreenWidth = width
+        if (height > 0) localScreenHeight = height
         listener?.invoke()
     }
 

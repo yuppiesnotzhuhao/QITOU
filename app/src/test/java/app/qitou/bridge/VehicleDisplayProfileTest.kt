@@ -12,6 +12,19 @@ class VehicleDisplayProfileTest {
 
         assertEquals(800 to 386, profile.resolveOutput(800, 386))
         assertFalse(profile.usesCustomOutput)
+        assertTrue(profile.sourceFollowsReported)
+    }
+
+    @Test
+    fun preservesManualCarLifeSourceOverride() {
+        val profile = VehicleDisplayProfile(
+            sourceWidth = 1280,
+            sourceHeight = 720,
+            sourceFollowsReported = false,
+        )
+
+        assertFalse(profile.copy(mode = DisplayScaleMode.STRETCH).sourceFollowsReported)
+        assertEquals("1280×720", profile.sourceRequest.label)
     }
 
     @Test
@@ -30,11 +43,26 @@ class VehicleDisplayProfileTest {
     }
 
     @Test
-    fun normalizesSourceRequestToSupportedCarLifePresets() {
+    fun preservesCustomSourceRequestAndAlignsOddDimensions() {
         val valid = VehicleDisplayProfile(sourceWidth = 1024, sourceHeight = 480)
-        val invalid = VehicleDisplayProfile(sourceWidth = 1000, sourceHeight = 500)
+        val custom = VehicleDisplayProfile(sourceWidth = 800, sourceHeight = 386)
+        val odd = VehicleDisplayProfile(sourceWidth = 1001, sourceHeight = 515)
 
         assertEquals("1024×480", valid.sourceRequest.label)
+        assertEquals("800×386", custom.sourceRequest.label)
+        assertEquals("1000×516", odd.sourceRequest.label)
+    }
+
+    @Test
+    fun fallsBackForUnsupportedSourceRequestBounds() {
+        val invalid = VehicleDisplayProfile(sourceWidth = 100, sourceHeight = 500)
+
         assertEquals("1280×480", invalid.sourceRequest.label)
+    }
+
+    @Test
+    fun localCarLifeUsesLandscapePhoneScreenResolution() {
+        assertEquals("3168×1440", LocalCarLifeDisplay.sourceForScreen(1440, 3168).label)
+        assertEquals("2400×1080", LocalCarLifeDisplay.sourceForScreen(1080, 2400).label)
     }
 }

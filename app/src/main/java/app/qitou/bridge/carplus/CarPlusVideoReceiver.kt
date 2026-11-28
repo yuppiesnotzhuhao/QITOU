@@ -34,7 +34,7 @@ class CarPlusVideoReceiver(
     private val log: (String) -> Unit,
     private val requestedWidth: Int = 1280,
     private val requestedHeight: Int = 720,
-    private val requestedFps: Int = 30,
+    private val requestedFps: Int = app.qitou.bridge.VideoFrameRate.MAX_FPS,
     private val onFps: (Int) -> Unit = {},
     private val onVideoSize: (width: Int, height: Int) -> Unit = { _, _ -> },
     private val onReady: () -> Unit = {},
@@ -95,7 +95,14 @@ class CarPlusVideoReceiver(
             }
             if (fps >= 5 && !readyFired) {
                 readyFired = true
-                log("[CAR+] steady video reached (fps=$fps) — starting bike hand-off")
+                log(
+                    "[CAR+] steady video reached (fps=$fps) — " +
+                        if (MiniState.localCarLife) {
+                            "starting local CarLife presentation"
+                        } else {
+                            "starting bike hand-off"
+                        },
+                )
                 MiniState.setCar("CarLife 画面稳定 · $fps fps", Stage.OK)
                 onReady()
             }
@@ -249,7 +256,10 @@ class CarPlusVideoReceiver(
         touchOut = sockets[CarPlusProtocol.PORT_TOUCH]?.getOutputStream()
         loopbackMissLogged = false
         log("[CAR+] connected to phone-side CarLife engine")
-        MiniState.setCar("荣耀车联已连接，正在等待桌面", Stage.WAIT)
+        MiniState.setCar(
+            "${CarPlusLauncher.connectedHostLabel(context)}已连接，正在等待桌面",
+            Stage.WAIT,
+        )
 
         thread(name = "carplus-cmd", isDaemon = true) {
             readCommands(cmd.getInputStream())
@@ -292,7 +302,7 @@ class CarPlusVideoReceiver(
             Thread.sleep(500)
         }
         log("[CAR+] CarLife session ended")
-        onSessionEnded()
+        if (running.get()) onSessionEnded()
     }
 
     private fun readCommands(input: InputStream) {

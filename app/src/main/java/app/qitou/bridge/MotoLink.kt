@@ -27,6 +27,7 @@ class MotoLink(
     private val context: Context,
     private val pipeline: MiniVideoPipeline,
     private val log: (String) -> Unit,
+    private val onCarLifeSourceChanged: (CarlifeSourceResolution) -> Unit = {},
 ) {
     private val running = java.util.concurrent.atomic.AtomicBoolean(false)
     private val clients = java.util.Collections.synchronizedList(ArrayList<Socket>())
@@ -164,6 +165,7 @@ class MotoLink(
                                 runCatching { socket.close() }
                                 if (running.get() && remaining == 0) {
                                     MiniState.setPxc("车机连接断开，准备重连", Stage.ERROR)
+                                    rearm("bike disconnected", 350L)
                                 }
                             }
                         }
@@ -224,6 +226,7 @@ class MotoLink(
                 PxcFrame.CMD_CHECK_SN -> replyCheckSn(frame, out)
                 PxcFrame.CMD_QUERY_SPEED -> PxcFrame(PxcFrame.CMD_QUERY_SPEED_RLY, ByteArray(0)).write(out)
                 PxcFrame.CMD_HEARTBEAT -> PxcFrame(PxcFrame.CMD_HEARTBEAT_ACK, ByteArray(0)).write(out)
+                PxcFrame.CMD_HEARTBEAT_ACK -> Unit
                 PxcFrame.CMD_HU_TIME_SYNC -> {
                     PxcFrame(PxcFrame.CMD_HU_TIME_SYNC_ACK, TimeAck.ack(frame.payload)).write(out)
                 }
@@ -329,6 +332,11 @@ class MotoLink(
                 negotiatedWidth = config.width
                 negotiatedHeight = config.height
                 captureSeen = true
+                val sourceChanged = VehicleDisplayProfileStore.applyReportedCanvasToSource(
+                    context,
+                    config.width,
+                    config.height,
+                )
                 val profile = VehicleDisplayProfileStore.load(context)
                 val output = profile.resolveOutput(config.width, config.height)
                 pipeline.configureBikeCanvas(
@@ -358,6 +366,9 @@ class MotoLink(
                 reply.putShort(6, output.second.toShort())
                 reply.put(8, config.extensionFlag.toByte())
                 req(out, 17, reply.array())
+                if (sourceChanged) {
+                    onCarLifeSourceChanged(profile.sourceRequest)
+                }
             }
             48 -> req(out, 49, ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
                 .putInt(0, 3).putInt(4, 1).array())

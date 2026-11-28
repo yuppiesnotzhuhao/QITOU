@@ -52,8 +52,26 @@ object CarlifeSourceResolutions {
     )
     val default = presets.first { it.width == 1280 && it.height == 480 }
 
-    fun normalize(width: Int, height: Int): CarlifeSourceResolution =
-        presets.firstOrNull { it.width == width && it.height == height } ?: default
+    fun normalize(width: Int, height: Int): CarlifeSourceResolution {
+        if (width !in 240..1920 || height !in 240..1080) return default
+        return CarlifeSourceResolution(
+            width = width and -2,
+            height = if (height % 2 == 0) height else height + 1,
+        )
+    }
+}
+
+object LocalCarLifeDisplay {
+    private const val MAX_SIDE = 4096
+
+    fun sourceForScreen(width: Int, height: Int): CarlifeSourceResolution {
+        val landscapeWidth = maxOf(width, height).coerceIn(240, MAX_SIDE)
+        val landscapeHeight = minOf(width, height).coerceIn(240, MAX_SIDE)
+        return CarlifeSourceResolution(
+            width = landscapeWidth and -2,
+            height = if (landscapeHeight % 2 == 0) landscapeHeight else landscapeHeight + 1,
+        )
+    }
 }
 
 data class VehicleDisplayProfile(
@@ -63,6 +81,7 @@ data class VehicleDisplayProfile(
     val customHeight: Int = 0,
     val sourceWidth: Int = CarlifeSourceResolutions.default.width,
     val sourceHeight: Int = CarlifeSourceResolutions.default.height,
+    val sourceFollowsReported: Boolean = true,
 ) {
     val outputWidth: Int get() = customWidth.coerceIn(240, 1920) and -2
     val outputHeight: Int
@@ -108,6 +127,7 @@ object VehicleDisplayProfileStore {
                 "${key}_source_height",
                 CarlifeSourceResolutions.default.height,
             ),
+            sourceFollowsReported = prefs.getBoolean("${key}_source_follow_reported", true),
         )
     }
 
@@ -124,7 +144,45 @@ object VehicleDisplayProfileStore {
             .putInt("${key}_output_height", profile.customHeight.coerceAtLeast(0))
             .putInt("${key}_source_width", profile.sourceRequest.width)
             .putInt("${key}_source_height", profile.sourceRequest.height)
+            .putBoolean("${key}_source_follow_reported", profile.sourceFollowsReported)
             .apply()
+    }
+
+    fun loadReportedCanvas(context: Context): Pair<Int, Int>? {
+        val key = vehicleKey(context)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val width = prefs.getInt("${key}_reported_width", 0)
+        val height = prefs.getInt("${key}_reported_height", 0)
+        return (width to height).takeIf {
+            width in 240..1920 && height in 240..1080
+        }
+    }
+
+    fun saveReportedCanvas(context: Context, width: Int, height: Int) {
+        if (width !in 240..1920 || height !in 240..1080) return
+        val key = vehicleKey(context)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putInt("${key}_reported_width", width)
+            .putInt("${key}_reported_height", height)
+            .apply()
+    }
+
+    fun applyReportedCanvasToSource(context: Context, width: Int, height: Int): Boolean {
+        saveReportedCanvas(context, width, height)
+        val profile = load(context)
+        if (!profile.sourceFollowsReported) return false
+        val normalized = CarlifeSourceResolutions.normalize(width, height)
+        if (profile.sourceRequest == normalized) return false
+        save(
+            context,
+            profile.copy(
+                sourceWidth = normalized.width,
+                sourceHeight = normalized.height,
+                sourceFollowsReported = true,
+            ),
+        )
+        return true
     }
 
     private fun vehicleKey(context: Context): String {

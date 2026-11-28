@@ -37,6 +37,22 @@ class ScreenViewportTest {
     }
 
     @Test
+    fun fitOnTallCanvasAddsVerticalLetterboxing() {
+        val rect = computeScreenViewport(
+            canvasWidth = 800,
+            canvasHeight = 680,
+            sourceWidth = 1280,
+            sourceHeight = 480,
+            fit = ScreenFit.FIT,
+        )
+
+        assertEquals(0, rect.x)
+        assertEquals(190, rect.y)
+        assertEquals(800, rect.width)
+        assertEquals(300, rect.height)
+    }
+
+    @Test
     fun fitAdaptsToAnotherBikeCanvasWithoutCropping() {
         val rect = computeScreenViewport(
             canvasWidth = 1024,

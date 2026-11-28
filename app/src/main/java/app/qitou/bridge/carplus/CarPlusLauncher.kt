@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 package app.qitou.bridge.carplus
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.ComponentName
@@ -18,6 +19,9 @@ object CarPlusLauncher {
     private const val CARLIFE_PLUS_PACKAGE = "com.baidu.carlife.honor"
     private const val CARLIFE_PLUS_ACTIVITY =
         "com.baidu.carlife.CarlifeActivity"
+    private const val XIAOMI_CARWITH_PACKAGE = "com.miui.carlink"
+    private const val VIVO_CAR_PACKAGE = "com.vivo.car.networking"
+    private const val VIVO_CAR_LAUNCHER_PACKAGE = "com.vivo.carlauncher"
     private const val HONOR_AUTO_PACKAGE = "com.hihonor.auto"
     private const val HONOR_AUTO_MANAGER_ACTIVITY =
         "com.hihonor.auto.settings.ManagerActivity"
@@ -30,10 +34,13 @@ object CarPlusLauncher {
     )
 
     private val hosts = listOf(
-        Host("com.oplus.ocar", "OPPO Car+"),
-        Host("com.coloros.ocar", "OPPO Car+"),
-        Host("com.oppo.ocar", "OPPO Car+"),
-        Host("com.oplus.car", "OPPO Car+"),
+        Host("com.oplus.ocar", "Car+ 车联"),
+        Host("com.coloros.ocar", "Car+ 车联"),
+        Host("com.oppo.ocar", "Car+ 车联"),
+        Host("com.oplus.car", "Car+ 车联"),
+        Host(XIAOMI_CARWITH_PACKAGE, "小米 CarWith"),
+        Host(VIVO_CAR_PACKAGE, "vivo 智能车载 Jovi InCar"),
+        Host(VIVO_CAR_LAUNCHER_PACKAGE, "vivo 车载 launcher"),
         Host(CARLIFE_PLUS_PACKAGE, "CarLife+ 增强版"),
     )
 
@@ -47,6 +54,25 @@ object CarPlusLauncher {
         isHonorDevice() &&
             isInstalled(context, CARLIFE_PLUS_PACKAGE) &&
             isInstalled(context, HONOR_AUTO_PACKAGE)
+
+    fun connectedHostLabel(context: Context): String = when {
+        canUseHonorLocalPresentation(context) -> "荣耀车联"
+        isXiaomiDevice() && isInstalled(context, XIAOMI_CARWITH_PACKAGE) -> "小米 CarWith"
+        isVivoDevice() && isInstalled(context, VIVO_CAR_PACKAGE) ->
+            if ("iqoo" in deviceIdentity()) {
+                "iQOO 智能车载（Jovi InCar）"
+            } else {
+                "vivo 智能车载（Jovi InCar）"
+            }
+        isOnePlusDevice() && hasOplusCarHost(context) -> "一加 Car+ 车联"
+        isRealmeDevice() && hasOplusCarHost(context) -> "realme Car+ 车机互联"
+        isOppoDevice() && hasOplusCarHost(context) -> "OPPO Car+ 车联"
+        isInstalled(context, XIAOMI_CARWITH_PACKAGE) -> "小米 CarWith"
+        isInstalled(context, VIVO_CAR_PACKAGE) -> "vivo 智能车载（Jovi InCar）"
+        hasOplusCarHost(context) -> "Car+ 车联"
+        isInstalled(context, CARLIFE_PLUS_PACKAGE) -> "CarLife+ 增强版"
+        else -> "手机车联"
+    }
 
     /**
      * Opens Honor CarConnect's own wireless connection page.
@@ -78,6 +104,28 @@ object CarPlusLauncher {
                     error.javaClass.simpleName,
             )
             false
+        }
+    }
+
+    fun restartInstalledHosts(context: Context, log: (String) -> Unit) {
+        val packages = buildList {
+            addAll(orderedHosts().map { it.packageName })
+            add(CARLIFE_PLUS_PACKAGE)
+            add(HONOR_AUTO_PACKAGE)
+        }.distinct().filter { isInstalled(context, it) }
+        val activityManager = context.getSystemService(ActivityManager::class.java)
+        packages.forEach { packageName ->
+            val result = runCatching {
+                activityManager.killBackgroundProcesses(packageName)
+            }
+            if (result.isSuccess) {
+                log("[CAR+] requested host process restart: $packageName")
+            } else {
+                log(
+                    "[CAR+] host process restart rejected: $packageName " +
+                        (result.exceptionOrNull()?.javaClass?.simpleName ?: "unknown"),
+                )
+            }
         }
     }
 
@@ -225,14 +273,40 @@ object CarPlusLauncher {
         }.getOrDefault(false)
 
     private fun orderedHosts(): List<Host> {
-        val honorDevice = isHonorDevice()
-        if (!honorDevice) return hosts
-        return hosts.sortedBy {
-            when (it.packageName) {
-                CARLIFE_PLUS_PACKAGE -> 0
-                else -> 1
-            }
+        val preferredPackages = when {
+            isHonorDevice() -> setOf(CARLIFE_PLUS_PACKAGE)
+            isXiaomiDevice() -> setOf(XIAOMI_CARWITH_PACKAGE)
+            isVivoDevice() -> setOf(VIVO_CAR_PACKAGE, VIVO_CAR_LAUNCHER_PACKAGE)
+            isOnePlusDevice() || isRealmeDevice() || isOppoDevice() ->
+                setOf("com.oplus.ocar", "com.coloros.ocar", "com.oppo.ocar", "com.oplus.car")
+            else -> emptySet()
         }
+        return hosts.sortedBy { if (it.packageName in preferredPackages) 0 else 1 }
     }
+
+    private fun deviceIdentity(): String =
+        "${Build.MANUFACTURER} ${Build.BRAND}".lowercase()
+
+    private fun isXiaomiDevice(): Boolean = deviceIdentity().let {
+        "xiaomi" in it || "redmi" in it || "poco" in it
+    }
+
+    private fun isVivoDevice(): Boolean = deviceIdentity().let {
+        "vivo" in it || "iqoo" in it
+    }
+
+    private fun isOnePlusDevice(): Boolean = "oneplus" in deviceIdentity()
+
+    private fun isRealmeDevice(): Boolean = "realme" in deviceIdentity()
+
+    private fun isOppoDevice(): Boolean = "oppo" in deviceIdentity()
+
+    private fun hasOplusCarHost(context: Context): Boolean =
+        listOf(
+            "com.oplus.ocar",
+            "com.coloros.ocar",
+            "com.oppo.ocar",
+            "com.oplus.car",
+        ).any { isInstalled(context, it) }
 
 }

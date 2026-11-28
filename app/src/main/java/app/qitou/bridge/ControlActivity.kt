@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.graphics.SurfaceTexture
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.MotionEvent
@@ -15,6 +16,9 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
+import kotlin.math.abs
 
 /**
  * Immersive in-app controller. It is deliberately a normal Activity, not an overlay:
@@ -30,9 +34,22 @@ class ControlActivity : Activity() {
     private var previewSurface: Surface? = null
     private var lastX = 0
     private var lastY = 0
+    private var edgeSwipeTracking = false
+    private var edgeSwipeDirection = 0
+    private var edgeSwipeStartX = 0f
+    private var edgeSwipeStartY = 0f
+    private var backCallback: OnBackInvokedCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 33) {
+            backCallback = OnBackInvokedCallback { finish() }.also {
+                onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    it,
+                )
+            }
+        }
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.statusBarColor = Color.BLACK
@@ -106,6 +123,10 @@ class ControlActivity : Activity() {
                 ),
             )
         }
+        if (MiniState.localCarLife) {
+            exit.visibility = android.view.View.GONE
+            fps.visibility = android.view.View.GONE
+        }
 
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -142,6 +163,16 @@ class ControlActivity : Activity() {
         detach()
         MiniState.listener = null
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            backCallback?.let {
+                onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it)
+            }
+        }
+        backCallback = null
+        super.onDestroy()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -201,6 +232,7 @@ class ControlActivity : Activity() {
     }
 
     private fun onTouch(view: android.view.View, event: MotionEvent): Boolean {
+        if (handleLocalCarLifeEdgeBack(view, event)) return true
         val pointer = if (event.actionMasked == MotionEvent.ACTION_POINTER_UP) {
             event.actionIndex
         } else {
@@ -252,6 +284,42 @@ class ControlActivity : Activity() {
         return true
     }
 
+    private fun handleLocalCarLifeEdgeBack(view: android.view.View, event: MotionEvent): Boolean {
+        if (!MiniState.localCarLife) return false
+        val edgeWidth = dp(28).toFloat()
+        val finishDistance = dp(88).toFloat()
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                edgeSwipeTracking = false
+                edgeSwipeDirection = when {
+                    event.x <= edgeWidth -> 1
+                    event.x >= view.width - edgeWidth -> -1
+                    else -> 0
+                }
+                if (edgeSwipeDirection != 0) {
+                    edgeSwipeTracking = true
+                    edgeSwipeStartX = event.x
+                    edgeSwipeStartY = event.y
+                    return true
+                }
+            }
+            MotionEvent.ACTION_MOVE -> if (edgeSwipeTracking) {
+                val dx = (event.x - edgeSwipeStartX) * edgeSwipeDirection
+                val dy = abs(event.y - edgeSwipeStartY)
+                if (dx >= finishDistance && dx > dy * 1.2f) {
+                    edgeSwipeTracking = false
+                    finish()
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (edgeSwipeTracking) {
+                edgeSwipeTracking = false
+                return true
+            }
+        }
+        return false
+    }
+
     private fun mapPoint(x: Float, y: Float, w: Int, h: Int): Pair<Int, Int>? {
         if (w <= 0 || h <= 0) return null
         val sourceAspect = MiniState.sourceWidth.toFloat() / MiniState.sourceHeight
@@ -277,9 +345,14 @@ class ControlActivity : Activity() {
     private fun renderFps() {
         if (!::fps.isInitialized) return
         fps.text = if (MiniState.framesPerSecond > 0) {
-            "${MiniState.framesPerSecond} fps"
+            if (MiniState.localCarLife) {
+                "本地 CarLife · ${MiniState.sourceWidth}×${MiniState.sourceHeight} · " +
+                    "${MiniState.framesPerSecond} fps · 手机音频"
+            } else {
+                "${MiniState.framesPerSecond} fps"
+            }
         } else {
-            "等待画面"
+            if (MiniState.localCarLife) "本地 CarLife · 等待画面" else "等待画面"
         }
         if (MiniState.framesPerSecond <= 0 && !MiniState.running) {
             finish()

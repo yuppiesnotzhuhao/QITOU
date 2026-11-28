@@ -40,7 +40,9 @@ class MotoAudioPlayer(
             log(
                 "[AUDIO] mix media=${value.mediaPercent}% " +
                     "navigation=${value.navigationPercent}% " +
-                    "duck=${value.duckMediaDuringNavigation} route=${value.outputRoute.storageValue}",
+                    "duck=${value.duckMediaDuringNavigation} " +
+                    "route=${effectiveRoute().storageValue}" +
+                    if (MiniState.localCarLife) " forced=local_carlife" else "",
             )
             refreshRouteAndVolumes()
         }
@@ -67,7 +69,7 @@ class MotoAudioPlayer(
         if (pcm.isEmpty()) return
         synchronized(audioLock) {
             val device = resolveExplicitDevice()
-            if (settings.outputRoute == AudioOutputRoute.BIKE_BLUETOOTH && device == null) {
+            if (effectiveRoute() == AudioOutputRoute.BIKE_BLUETOOTH && device == null) {
                 releaseTracksLocked()
                 publishRouteUnavailable()
                 return
@@ -195,7 +197,7 @@ class MotoAudioPlayer(
     private fun refreshRouteAndVolumes() {
         synchronized(audioLock) {
             val device = resolveExplicitDevice()
-            if (settings.outputRoute == AudioOutputRoute.BIKE_BLUETOOTH && device == null) {
+            if (effectiveRoute() == AudioOutputRoute.BIKE_BLUETOOTH && device == null) {
                 releaseTracksLocked()
                 publishRouteUnavailable()
                 return
@@ -210,7 +212,7 @@ class MotoAudioPlayer(
     }
 
     private fun resolveExplicitDevice(): AudioDeviceInfo? {
-        if (settings.outputRoute != AudioOutputRoute.BIKE_BLUETOOTH) return null
+        if (effectiveRoute() != AudioOutputRoute.BIKE_BLUETOOTH) return null
         return audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
             .filter { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
             .sortedByDescending {
@@ -247,14 +249,17 @@ class MotoAudioPlayer(
         }
     }
 
-    private fun routeLabel(): String = when (settings.outputRoute) {
+    private fun effectiveRoute(): AudioOutputRoute =
+        if (MiniState.localCarLife) AudioOutputRoute.PHONE else settings.outputRoute
+
+    private fun routeLabel(): String = when (effectiveRoute()) {
         AudioOutputRoute.PHONE -> "手机"
         AudioOutputRoute.BIKE_BLUETOOTH -> "车机蓝牙"
     }
 
     private fun publishRouteUnavailable() {
         MiniState.setAudio(
-            when (settings.outputRoute) {
+            when (effectiveRoute()) {
                 AudioOutputRoute.PHONE -> "手机默认音频路由不可用"
                 AudioOutputRoute.BIKE_BLUETOOTH -> "车机蓝牙未连接（需要 A2DP）"
             },

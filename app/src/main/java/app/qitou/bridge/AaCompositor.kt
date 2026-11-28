@@ -110,7 +110,7 @@ class AaCompositor(private val log: (String) -> Unit) {
     private var lastDrawMs = 0L
     private var lastPreviewDrawMs = 0L
     private var lastDrawFailureLogMs = 0L
-    @Volatile private var minFrameIntervalMs = 42L  // default 24 fps; overridden by setFrameCap()
+    @Volatile private var minFrameIntervalMs = VideoFrameRate.FRAME_INTERVAL_MS
 
     // Keep-alive cadence. The tick is fast enough to promptly flush a coalesced trailing frame after
     // motion stops; the idle re-draw is deliberately slow — the bike only needs a frame every ~9s
@@ -118,7 +118,7 @@ class AaCompositor(private val log: (String) -> Unit) {
     // than ~twice a second is wasted heat. This is the big idle-power win over the old 15fps floor.
     private val KEEPALIVE_TICK_MS = 150L
     private val IDLE_REDRAW_MS = 2000L
-    private val PREVIEW_FRAME_INTERVAL_MS = 50L
+    private val PREVIEW_FRAME_INTERVAL_MS = VideoFrameRate.FRAME_INTERVAL_MS
 
     // Full-screen quad (triangle strip): pos.xy + tex.uv interleaved.
     private val quad: FloatBuffer = ByteBuffer
@@ -447,8 +447,8 @@ class AaCompositor(private val log: (String) -> Unit) {
 
     /** Set the live-frame cap (frames/sec) from the user's [app.qitou.bridge.PowerMode]. */
     fun setFrameCap(fps: Int) {
-        val clamped = fps.coerceIn(10, 60)
-        minFrameIntervalMs = (1000L / clamped)
+        val clamped = fps.coerceIn(10, VideoFrameRate.MAX_FPS)
+        minFrameIntervalMs = VideoFrameRate.intervalMs(clamped)
         log("[COMPOSITOR] frame cap → ${clamped}fps (min ${minFrameIntervalMs}ms/frame)")
     }
 

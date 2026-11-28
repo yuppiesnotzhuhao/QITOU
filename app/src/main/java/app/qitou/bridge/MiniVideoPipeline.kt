@@ -44,6 +44,10 @@ class MiniVideoPipeline(
         log("[MINI] source size updated to ${width}x$height")
     }
 
+    fun setFrameCap(fps: Int) {
+        compositor.setFrameCap(fps)
+    }
+
     @Synchronized
     fun configureBikeCanvas(
         width: Int = 800,
